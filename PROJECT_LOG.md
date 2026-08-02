@@ -16,7 +16,8 @@ schema, RLS, and seed data are confirmed already applied (Conversations/Leads co
 captured leads from live WhatsApp conversations), and a dashboard user can sign in successfully.
 The earlier "nothing run yet" status in this log was stale as of this check. The webhook now also
 supports a "change branch" trigger phrase (any state, any time) and a stricter bilingual-only
-fallback for off-topic messages from active customers.
+fallback for off-topic messages from active customers. Conversations page is now a proper
+WhatsApp-Web-style two-pane layout (list always visible, thread scrolls independently).
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -26,6 +27,45 @@ fallback for off-topic messages from active customers.
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-02 — Conversations page: WhatsApp-Web-style fixed two-pane layout
+- What changed: /dashboard/conversations was two independent routes (the list page and the
+  [phone] detail page) — opening a conversation navigated away from the list entirely, so the
+  list wasn't a sidebar at all, it just scrolled/disappeared along with the rest of the page.
+  Restructured as a nested layout: app/dashboard/conversations/layout.tsx now server-fetches the
+  customer list once and renders it as a persistent left column (new
+  components/dashboard/ConversationsList.tsx, a client component using usePathname to highlight
+  the open conversation) alongside {children} as the right column — both routes
+  (app/dashboard/conversations/page.tsx, now just a "select a conversation" EmptyState, and
+  app/dashboard/conversations/[phone]/page.tsx) render only inside that right column, so the list
+  never unmounts when navigating between conversations. The layout's outer container is sized
+  `h-[calc(100vh-3.5rem)]` — matching the dashboard shell's `<main>` vertical padding (py-7 ×
+  2 = 3.5rem) exactly — so the panel always fits the visible viewport and `<main>` itself never
+  needs to scroll; the list column and the message-thread column each get their own
+  `overflow-y-auto` (with `min-h-0` on their flex containers, required for the scroll regions to
+  actually engage instead of growing to fit content). Within the thread column, the customer info
+  header is `shrink-0` (stays pinned) and only the messages below it scroll — matching WhatsApp
+  Web's split more closely than a plain two-column scroll would. Removed the now-redundant "Back
+  to conversations" link from the detail page, since the list is always visible.
+- Why: The user reported the conversation list disappearing/scrolling away when a thread was
+  opened, instead of behaving like a standard two-pane inbox (WhatsApp Web / Slack) where the
+  list stays put and only the open thread scrolls.
+- How it was verified: `tsc --noEmit`, `eslint .`, and `next build` all clean. Since this is a
+  scroll/layout behavior fix that can't be confirmed by static analysis, also verified live:
+  seeded 30 temporary customers (one with 40 messages) via the service-role client, logged in as
+  a temporary Supabase Auth user with Playwright (installed transiently via `npm install
+  --no-save`, never touching package.json/package-lock.json), and drove real mouse-wheel scroll
+  events over the message pane and then the list pane. Measured `scrollTop` on each independently
+  scrollable container directly (not just bounding boxes): the message pane's scrollTop moved
+  0 → 2203 while the list pane's stayed at 0, then the list pane's moved 0 → 2208 while the
+  message pane's stayed unchanged; the dashboard `<main>` shell and `window.scrollY` both stayed
+  at 0 throughout; the sidebar, conversation list, and thread header bounding boxes were pixel
+  stable across both scroll actions. All 11 checks passed. Screenshots confirmed the same
+  visually. Temp user, temp customers/messages, and the transient playwright install were all
+  cleaned up afterward.
+- Files touched: app/dashboard/conversations/layout.tsx (new),
+  components/dashboard/ConversationsList.tsx (new), app/dashboard/conversations/page.tsx,
+  app/dashboard/conversations/[phone]/page.tsx, PROJECT_LOG.md
 
 ### 2026-08-02 — Fix: gmb_review_link duplicated in branch confirmation message
 - What changed: confirmBranch()'s "with-link" text variant had the review link inserted once in
