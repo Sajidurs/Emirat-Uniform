@@ -370,8 +370,9 @@ async function confirmBranch(supabase: SupabaseClient, phoneNumber: string, bran
   let text: string;
   if (branch.gmb_review_link) {
     text =
-      `شكراً لزيارتكم فرع ${branch.name}! نقدّر تقييمكم لنا:\n${branch.gmb_review_link}\n\n` +
-      `Thank you for visiting our ${branch.name} branch! We'd love it if you could leave us a review:\n${branch.gmb_review_link}\n\n` +
+      `شكراً لزيارتكم فرع ${branch.name}! نقدّر تقييمكم لنا.\n\n` +
+      `Thank you for visiting our ${branch.name} branch! We'd love it if you could leave us a review:\n\n` +
+      `${branch.gmb_review_link}\n\n` +
       BRANCH_CHANGE_HINT;
   } else {
     console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_review_link set`);

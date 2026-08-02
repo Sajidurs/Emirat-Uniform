@@ -27,6 +27,14 @@ fallback for off-topic messages from active customers.
 
 ## Change history
 
+### 2026-08-02 — Fix: gmb_review_link duplicated in branch confirmation message
+- What changed: confirmBranch()'s "with-link" text variant had the review link inserted once in
+  the Arabic line and again in the English line (introduced when the change-branch hint was
+  added). Restructured to a single shared link placed once after both language lines, before the
+  bilingual change-branch hint.
+- Why: The customer was receiving the same review link twice in one message.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
+
 ### 2026-08-02 — Dashboard visual redesign (premium/soft SaaS style)
 - What changed: Restyled the whole admin dashboard — no functional/behavioral changes. New shared
   primitives in components/dashboard/ui/ (Button — primary/secondary/ghost/danger variants;
