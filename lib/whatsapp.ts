@@ -67,3 +67,43 @@ export function sendWhatsAppList(
     },
   });
 }
+
+export interface TemplateSendResult {
+  messageId: string | null;
+  error?: string;
+}
+
+/**
+ * Sends an approved WhatsApp template message (used for marketing campaigns).
+ * Returns the failure reason (rather than just logging it) so campaign_sends
+ * rows can record why a send failed.
+ */
+export async function sendWhatsAppTemplate(
+  to: string,
+  templateName: string,
+  languageCode: string
+): Promise<TemplateSendResult> {
+  const res = await fetch(apiUrl(), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: { name: templateName, language: { code: languageCode } },
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const errorMessage: string = data?.error?.message ?? `WhatsApp API error (${res.status})`;
+    console.error("WhatsApp template send error", res.status, data);
+    return { messageId: null, error: errorMessage };
+  }
+
+  return { messageId: data?.messages?.[0]?.id ?? null };
+}

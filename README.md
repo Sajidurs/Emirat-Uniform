@@ -30,6 +30,7 @@ project purpose, architecture, and change history.
    | `WHATSAPP_TOKEN` | WhatsApp Cloud API access token |
    | `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Cloud API phone number ID |
    | `WHATSAPP_VERIFY_TOKEN` | Token used to verify the WhatsApp webhook subscription |
+   | `WHATSAPP_BUSINESS_ACCOUNT_ID` | WhatsApp Business Account ID, used by the dashboard to submit/check message templates via Meta's Template Management API |
 
 3. **Run the database schema**
 

@@ -48,6 +48,12 @@ interface WhatsAppMessage {
   };
 }
 
+interface WhatsAppStatus {
+  id: string; // wa_message_id of the outbound message this status refers to
+  status: "sent" | "delivered" | "read" | "failed";
+  errors?: { code?: number; title?: string; message?: string }[];
+}
+
 // ---------- GET: Meta webhook verification ----------
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -72,13 +78,20 @@ export async function POST(req: NextRequest) {
     for (const entry of entries) {
       for (const change of entry?.changes ?? []) {
         const value = change?.value;
+
         const messages: WhatsAppMessage[] | undefined = value?.messages;
-        if (!messages) continue; // status callbacks, not customer messages
+        if (messages) {
+          const contactName: string | null = value?.contacts?.[0]?.profile?.name ?? null;
+          for (const message of messages) {
+            await handleInboundMessage(supabase, message, contactName);
+          }
+        }
 
-        const contactName: string | null = value?.contacts?.[0]?.profile?.name ?? null;
-
-        for (const message of messages) {
-          await handleInboundMessage(supabase, message, contactName);
+        const statuses: WhatsAppStatus[] | undefined = value?.statuses;
+        if (statuses) {
+          for (const status of statuses) {
+            await handleStatusUpdate(supabase, status);
+          }
         }
       }
     }
@@ -88,6 +101,29 @@ export async function POST(req: NextRequest) {
 
   // Always acknowledge so Meta doesn't retry.
   return NextResponse.json({ status: "ok" });
+}
+
+/**
+ * WhatsApp delivery status callback (sent/delivered/read/failed) for an
+ * outbound message. Only campaign_sends rows carry a wa_message_id, so this
+ * only ever updates campaign messages — the bot's own conversational replies
+ * have no matching row, and the update below simply affects zero rows.
+ */
+async function handleStatusUpdate(supabase: SupabaseClient, status: WhatsAppStatus) {
+  const updates: Record<string, unknown> = {
+    status: status.status,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (status.status === "failed" && status.errors && status.errors.length > 0) {
+    updates.error_reason = status.errors[0].title ?? status.errors[0].message ?? "Unknown error";
+  }
+
+  const { error } = await supabase.from("campaign_sends").update(updates).eq("wa_message_id", status.id);
+
+  if (error) {
+    console.error("Failed to update campaign_sends from status callback", error);
+  }
 }
 
 async function handleInboundMessage(

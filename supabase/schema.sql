@@ -66,6 +66,8 @@ create table if not exists templates (
   meta_template_id text,
   status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
   body text,
+  category text check (category in ('marketing', 'utility')),
+  language text not null default 'en_US',
   created_at timestamptz not null default now()
 );
 
@@ -90,8 +92,15 @@ create table if not exists campaign_sends (
   phone_number text not null,
   status text not null default 'queued' check (status in ('queued', 'sent', 'delivered', 'read', 'failed')),
   error_reason text,
+  wa_message_id text,
   sent_at timestamptz,
   updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_campaign_sends_campaign_id on campaign_sends (campaign_id);
+
+-- Lets the WhatsApp status webhook (sent/delivered/read/failed) find the row
+-- to update by the outbound message id returned when the campaign send fired.
+create unique index if not exists uq_campaign_sends_wa_message_id
+  on campaign_sends (wa_message_id)
+  where wa_message_id is not null;
