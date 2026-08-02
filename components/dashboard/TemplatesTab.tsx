@@ -3,11 +3,16 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type { Template } from "@/lib/types";
+import Button from "./ui/Button";
+import Select from "./ui/Select";
+import Badge from "./ui/Badge";
+import EmptyState from "./ui/EmptyState";
+import { CampaignsIcon, PlusIcon, RefreshIcon } from "./icons";
 
-const STATUS_STYLES: Record<Template["status"], string> = {
-  approved: "bg-green-100 text-green-800",
-  pending: "bg-amber-100 text-amber-800",
-  rejected: "bg-red-100 text-red-800",
+const STATUS_TONE: Record<Template["status"], "green" | "amber" | "red"> = {
+  approved: "green",
+  pending: "amber",
+  rejected: "red",
 };
 
 export default function TemplatesTab({ templates }: { templates: Template[] }) {
@@ -66,29 +71,30 @@ export default function TemplatesTab({ templates }: { templates: Template[] }) {
   return (
     <div>
       <div className="mb-4 flex justify-end">
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800"
-        >
+        <Button variant={showForm ? "secondary" : "primary"} onClick={() => setShowForm((v) => !v)}>
+          {!showForm && <PlusIcon className="h-4 w-4" />}
           {showForm ? "Cancel" : "Create New Template"}
-        </button>
+        </Button>
       </div>
 
       {showForm && (
-        <form onSubmit={handleCreate} className="mb-6 space-y-3 rounded-lg border border-gray-200 bg-white p-4">
+        <form
+          onSubmit={handleCreate}
+          className="mb-6 space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+        >
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Name</label>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Name</label>
             <input
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. weekend_promo"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              className="w-full rounded-lg border-0 px-3 py-2 text-sm text-slate-700 shadow-sm ring-1 ring-inset ring-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">
               Body (use {"{{1}}"}, {"{{2}}"} for variables)
             </label>
             <textarea
@@ -97,76 +103,81 @@ export default function TemplatesTab({ templates }: { templates: Template[] }) {
               onChange={(e) => setBody(e.target.value)}
               rows={3}
               placeholder="Hi {{1}}, enjoy 20% off this weekend at Emirat Uniform!"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              className="w-full rounded-lg border-0 px-3 py-2 text-sm text-slate-700 shadow-sm ring-1 ring-inset ring-slate-200 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
             />
           </div>
 
           <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">Category</label>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value as "marketing" | "utility")}
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm"
-            >
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Category</label>
+            <Select value={category} onChange={(e) => setCategory(e.target.value as "marketing" | "utility")}>
               <option value="marketing">Marketing</option>
               <option value="utility">Utility</option>
-            </select>
+            </Select>
           </div>
 
-          {error && <p className="text-sm text-red-600">{error}</p>}
+          {error && <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
-          <button
-            type="submit"
-            disabled={creating}
-            className="rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-          >
+          <Button type="submit" variant="primary" disabled={creating}>
             {creating ? "Submitting to Meta..." : "Submit for Approval"}
-          </button>
+          </Button>
         </form>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-        <table className="min-w-full divide-y divide-gray-200 text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Name</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Category</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Created</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {templates.map((t) => (
-              <tr key={t.id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 text-gray-900">{t.name}</td>
-                <td className="px-4 py-3 text-gray-700 capitalize">{t.category ?? "—"}</td>
-                <td className="px-4 py-3">
-                  <span className={`rounded-full px-2 py-1 text-xs font-medium ${STATUS_STYLES[t.status]}`}>
-                    {t.status}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-gray-500">{new Date(t.created_at).toLocaleDateString()}</td>
-                <td className="px-4 py-3">
-                  <button
-                    onClick={() => handleRefreshStatus(t.id)}
-                    disabled={refreshingId === t.id || !t.meta_template_id}
-                    className="rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    {refreshingId === t.id ? "Checking..." : "Refresh Status"}
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {templates.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-4 py-6 text-center text-gray-500">
-                  No templates yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        {templates.length === 0 ? (
+          <EmptyState
+            icon={<CampaignsIcon className="h-6 w-6" />}
+            title="No templates yet"
+            description="Create a template above and submit it to Meta for approval."
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-100 text-sm">
+              <thead className="bg-slate-50/60">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Name
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Category
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Status
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Created
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {templates.map((t) => (
+                  <tr key={t.id} className="odd:bg-white even:bg-slate-50/40 transition-colors hover:bg-indigo-50/40">
+                    <td className="px-4 py-3.5 font-medium text-slate-800">{t.name}</td>
+                    <td className="px-4 py-3.5 text-slate-600 capitalize">{t.category ?? "—"}</td>
+                    <td className="px-4 py-3.5">
+                      <Badge tone={STATUS_TONE[t.status]}>{t.status}</Badge>
+                    </td>
+                    <td className="px-4 py-3.5 text-slate-400">{new Date(t.created_at).toLocaleDateString()}</td>
+                    <td className="px-4 py-3.5">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => handleRefreshStatus(t.id)}
+                        disabled={refreshingId === t.id || !t.meta_template_id}
+                      >
+                        <RefreshIcon className={`h-3.5 w-3.5 ${refreshingId === t.id ? "animate-spin" : ""}`} />
+                        {refreshingId === t.id ? "Checking..." : "Refresh Status"}
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

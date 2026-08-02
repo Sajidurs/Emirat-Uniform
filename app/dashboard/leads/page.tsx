@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import LeadsTable from "@/components/dashboard/LeadsTable";
+import PageHeader from "@/components/dashboard/ui/PageHeader";
 import type { Branch, LeadRow, Location } from "@/lib/types";
 
 interface RawCustomer {
@@ -37,7 +38,10 @@ export default async function LeadsPage() {
 
   return (
     <div>
-      <h1 className="mb-6 text-xl font-semibold text-gray-900">Leads</h1>
+      <PageHeader
+        title="Leads"
+        description="Filter captured leads by branch and launch a WhatsApp campaign."
+      />
       <LeadsTable leads={leads} locations={locations} branches={branches} />
     </div>
   );

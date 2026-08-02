@@ -10,11 +10,13 @@ campaigns using Meta-approved templates, submit new templates for Meta approval,
 per-campaign delivery statistics (sent, delivered, failed, failure reasons).
 
 ## Current status
-Admin dashboard is built: Supabase Auth login, protected /dashboard/* routes, Conversations,
-Leads (filter + CSV export + campaign send), and Campaigns (templates + history + per-campaign
-delivery stats). Schema/RLS/seed SQL — including the templates.category/language and
-campaign_sends.wa_message_id additions from this change — still has not been run against a live
-Supabase project yet, and no dashboard user has been created in Supabase Auth yet.
+Admin dashboard is built and restyled with a soft/premium visual design (Conversations, Leads,
+Campaigns, Sidebar). Verified live in a real browser against the actual Supabase project — the
+schema, RLS, and seed data are confirmed already applied (Conversations/Leads correctly show real
+captured leads from live WhatsApp conversations), and a dashboard user can sign in successfully.
+The earlier "nothing run yet" status in this log was stale as of this check. The webhook now also
+supports a "change branch" trigger phrase (any state, any time) and a stricter bilingual-only
+fallback for off-topic messages from active customers.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -24,6 +26,86 @@ Supabase project yet, and no dashboard user has been created in Supabase Auth ye
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-02 — Dashboard visual redesign (premium/soft SaaS style)
+- What changed: Restyled the whole admin dashboard — no functional/behavioral changes. New shared
+  primitives in components/dashboard/ui/ (Button — primary/secondary/ghost/danger variants;
+  Select — native select restyled with a custom chevron, appearance-none, focus ring;
+  Checkbox — native checkbox with accent-indigo-600; Badge — soft pill status labels;
+  EmptyState — icon + title + description for empty tables/lists; PageHeader — consistent
+  title+description+actions header) plus a hand-written outline icon set
+  (components/dashboard/icons.tsx: nav icons, chevron, inbox, plus, download, paper-plane,
+  arrow-left, refresh — no icon library dependency). Palette: bg-slate-50 page background,
+  white bg-slate-200-bordered cards/tables (rounded-xl, shadow-sm), slate-900/600/400 text instead
+  of pure black, indigo-600 as the single accent for primary actions/active nav/focus rings.
+  Sidebar (components/dashboard/Sidebar.tsx) now has icons per nav item, an indigo-tinted active
+  state, and a bottom user block (avatar initials + email + logout icon button) — the layout now
+  passes the logged-in user's email down from the server-side auth check already done in
+  app/dashboard/layout.tsx. Every list table (Conversations, Leads, Templates, Campaign History,
+  campaign detail recipients) got row hover/alternating shading, softer dividers, and an
+  EmptyState instead of a blank/placeholder row. Leads filters and the template-category picker
+  now use the Select component; all checkboxes use the Checkbox component. Campaigns tab switcher
+  became a segmented pill control; campaign detail stats became small tiles with a colored count
+  circle per status. Conversation detail thread restyled as chat bubbles (indigo for outbound,
+  slate for inbound, rounded-2xl with a flat corner on the sending side).
+- Why: The dashboard looked like a bare unstyled admin table; this brings it in line with a
+  modern SaaS look (Linear/Notion/Stripe-style) per explicit design direction, without touching
+  any data flow, API route, or auth logic.
+- How it was verified: No /mnt/skills/public/frontend-design/SKILL.md (or equivalent) exists in
+  this environment, so the redesign follows general premium-SaaS conventions directly. Verified
+  with `tsc --noEmit`, `eslint .`, and `next build` (all clean), then actually run in a browser:
+  started the dev server, created a temporary Supabase Auth user via the admin API
+  (service-role client), logged in with Playwright (fetched transiently via `npm install
+  playwright --no-save` + `npx`, not added to package.json/package-lock.json), and screenshotted
+  Conversations/Leads/Campaigns — all rendered correctly with zero browser console errors, then
+  the temp user and the transient playwright install were both cleaned up.
+- Files touched: components/dashboard/icons.tsx, components/dashboard/ui/Button.tsx,
+  components/dashboard/ui/Select.tsx, components/dashboard/ui/Checkbox.tsx,
+  components/dashboard/ui/Badge.tsx, components/dashboard/ui/EmptyState.tsx,
+  components/dashboard/ui/PageHeader.tsx, components/dashboard/Sidebar.tsx,
+  components/dashboard/LogoutButton.tsx, components/dashboard/LeadsTable.tsx,
+  components/dashboard/SendCampaignModal.tsx, components/dashboard/CampaignsTabs.tsx,
+  components/dashboard/TemplatesTab.tsx, components/dashboard/CampaignHistoryTab.tsx,
+  app/dashboard/layout.tsx, app/dashboard/conversations/page.tsx,
+  app/dashboard/conversations/[phone]/page.tsx, app/dashboard/leads/page.tsx,
+  app/dashboard/campaigns/page.tsx, app/dashboard/campaigns/[id]/page.tsx, app/layout.tsx,
+  PROJECT_LOG.md
+
+### 2026-08-02 — Webhook: branch-change trigger phrase + stricter bilingual fallback
+- What changed:
+  - Added a trigger-phrase check in handleInboundMessage() that runs before the customer.state
+    routing logic, on every inbound message regardless of current state. If the message body
+    (trimmed, case-insensitive, exact match) is "change branch", "change location", "غير الفرع",
+    "غيّر الفرع", "تغيير الفرع", or "تغيير الموقع", the in-memory customer.state is reset to
+    'new' so the rest of the function's existing 'new'-state branch handles it naturally (sends
+    the location list, then persists state 'awaiting_location'). branch_id is deliberately left
+    untouched — it only gets overwritten once the customer completes the new selection in
+    confirmBranch(), so there's no separate history table and no explicit clearing step.
+  - confirmBranch()'s thank-you message now appends a bilingual BRANCH_CHANGE_HINT line (Arabic
+    then English) telling the customer they can type "change branch" / "تغيير الفرع" anytime,
+    for both the with-review-link and no-review-link message variants.
+  - Rewrote ACTIVE_STATE_SYSTEM_PROMPT: previously it just said "thank them warmly, matching
+    their language." Now it explicitly states the assistant's only job is branch selection +
+    review link (no product/general questions, even if asked directly), instructs it to point
+    the customer at "change branch" / "تغيير الفرع", and — the key behavioral change — requires
+    every reply to show BOTH Arabic and English together (Arabic first), not just whichever
+    language the customer used. Bumped max_tokens from 150 to 250 so the now-longer bilingual
+    reply doesn't get truncated. Also replaced the API-failure fallback string (previously a
+    one-line "شكراً لك! / Thank you!") with ACTIVE_STATE_FALLBACK_REPLY, a fully bilingual
+    message matching the same shape Claude is instructed to produce, so even a Claude API
+    failure still meets the always-bilingual requirement.
+- Why: Customers who mis-selected their branch had no way to correct it short of re-scanning the
+  QR code from scratch; a "change branch" phrase gives them a direct escape hatch from any point
+  in the flow. Separately, the old fallback prompt could reply in only the customer's language and
+  didn't explicitly forbid answering off-topic questions — the new prompt makes both the
+  bilingual requirement and the "branch selection only, nothing else" scope explicit.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. Did not simulate a live webhook POST end-to-end — unlike the dashboard UI change, that
+  would call the real WhatsApp Cloud API and could send an actual message to a real phone number,
+  which isn't a safe/reversible test to run casually. Instead isolated and unit-tested
+  isBranchChangeTrigger()'s exact matching logic (case-insensitivity, trim, non-matches like
+  "change branch please") in a standalone Node script — all cases passed.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-02 — Admin dashboard (auth, conversations, leads, campaigns)
 - What changed:
@@ -129,18 +211,20 @@ Supabase project yet, and no dashboard user has been created in Supabase Auth ye
   supabase/rls.sql, supabase/seed_locations_branches.sql, PROJECT_LOG.md, README.md
 
 ## Known limitations / not yet built
-- No dashboard user exists yet — create one in the Supabase Auth dashboard (Authentication →
-  Users → Add user) before /login can be used.
+- Confirmed live and working (as of the 2026-08-02 redesign's browser verification): schema/RLS/
+  seed are applied to the real Supabase project, the WhatsApp webhook has handled real customer
+  conversations end-to-end (location → branch → active state), and Supabase Auth sign-in works.
+  Not yet confirmed: whether a *permanent* staff login exists — the verification used a
+  temporary auto-created-and-deleted test account, so create a real one (Supabase dashboard →
+  Authentication → Users → Add user) if one doesn't already exist for daily use.
 - Campaign sending doesn't support templates with variables ({{1}}, etc.) — sendWhatsAppTemplate()
   sends the template name + language only, no component parameters. Only variable-free templates
   can actually be sent via the campaign flow today; templates with variables can still be created
   and approved, just not sent yet.
 - No editing/archiving of templates or campaigns from the dashboard — templates are create-once
   (resubmit as a new template if rejected), campaigns are fire-and-forget.
-- gmb_review_link is NULL for all 13 branches — needs to be filled in with real Google My
-  Business review links before the bot can send them (the webhook logs a console warning and
-  sends a generic thank-you in the meantime).
-- Schema/RLS/seed SQL have not yet been run against a live Supabase project — this includes the
-  new templates.category/language and campaign_sends.wa_message_id columns added in this change.
-- Neither the webhook nor the dashboard's Meta Template Management API calls have been tested
-  against a real Meta WhatsApp Business account yet — only type-checked and build-verified.
+- gmb_review_link's actual values haven't been spot-checked recently — fill in real Google My
+  Business review links per branch if any are still NULL (the webhook logs a console warning and
+  sends a generic thank-you when one is missing).
+- No template has been created yet, so the dashboard's Meta Template Management API calls
+  (submit for approval / refresh status) are still unexercised against a real Meta account.

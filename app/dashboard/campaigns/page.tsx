@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import CampaignsTabs from "@/components/dashboard/CampaignsTabs";
+import PageHeader from "@/components/dashboard/ui/PageHeader";
 import type { CampaignListItem, Template } from "@/lib/types";
 
 interface RawCampaign {
@@ -37,7 +38,10 @@ export default async function CampaignsPage() {
 
   return (
     <div>
-      <h1 className="mb-6 text-xl font-semibold text-gray-900">Campaigns</h1>
+      <PageHeader
+        title="Campaigns"
+        description="Manage WhatsApp templates and review send performance."
+      />
       <CampaignsTabs templates={templates} campaigns={campaigns} />
     </div>
   );

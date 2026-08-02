@@ -23,6 +23,26 @@ const LOCATION_LABELS_AR: Record<string, string> = {
 const BRAND_FOOTER = "يونيفورم الإمارات / Emirat Uniform";
 const SELECT_BUTTON = "اختيار / Select";
 
+// Bilingual hint appended to the branch-confirmation thank-you message.
+const BRANCH_CHANGE_HINT =
+  "إذا كنت ترغب في تغيير الفرع لاحقًا، اكتب 'تغيير الفرع' في أي وقت.\n" +
+  "If you'd like to change your branch later, just type 'change branch' anytime.";
+
+// Exact-match (case-insensitive, trimmed) phrases that restart branch selection
+// regardless of the customer's current state.
+const BRANCH_CHANGE_TRIGGERS = new Set([
+  "change branch",
+  "change location",
+  "غير الفرع",
+  "غيّر الفرع",
+  "تغيير الفرع",
+  "تغيير الموقع",
+]);
+
+function isBranchChangeTrigger(text: string): boolean {
+  return BRANCH_CHANGE_TRIGGERS.has(text.trim().toLowerCase());
+}
+
 interface Customer {
   phone_number: string;
   name: string | null;
@@ -144,7 +164,16 @@ async function handleInboundMessage(
   }
 
   const customer = await upsertCustomer(supabase, phoneNumber, contactName);
-  await logMessage(supabase, phoneNumber, "inbound", extractMessageBody(message), waMessageId);
+  const inboundBody = extractMessageBody(message);
+  await logMessage(supabase, phoneNumber, "inbound", inboundBody, waMessageId);
+
+  // A branch-change trigger phrase always restarts branch selection, no
+  // matter what state the customer is currently in (mid-selection or
+  // already active). Their branch_id is left as-is until the new selection
+  // completes and overwrites it — no separate history is kept.
+  if (isBranchChangeTrigger(inboundBody)) {
+    customer.state = "new";
+  }
 
   const listReply = message.type === "interactive" && message.interactive?.type === "list_reply"
     ? message.interactive.list_reply!
@@ -176,7 +205,7 @@ async function handleInboundMessage(
   }
 
   // state === "active" (or anything else): hand off to Claude for a brief reply
-  await handleActiveConversation(supabase, phoneNumber, extractMessageBody(message));
+  await handleActiveConversation(supabase, phoneNumber, inboundBody);
 }
 
 function extractMessageBody(message: WhatsAppMessage): string {
@@ -342,12 +371,14 @@ async function confirmBranch(supabase: SupabaseClient, phoneNumber: string, bran
   if (branch.gmb_review_link) {
     text =
       `شكراً لزيارتكم فرع ${branch.name}! نقدّر تقييمكم لنا:\n${branch.gmb_review_link}\n\n` +
-      `Thank you for visiting our ${branch.name} branch! We'd love it if you could leave us a review:\n${branch.gmb_review_link}`;
+      `Thank you for visiting our ${branch.name} branch! We'd love it if you could leave us a review:\n${branch.gmb_review_link}\n\n` +
+      BRANCH_CHANGE_HINT;
   } else {
     console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_review_link set`);
     text =
       `شكراً لزيارتكم فرع ${branch.name}! نقدّر ثقتكم بنا.\n\n` +
-      `Thank you for visiting our ${branch.name} branch! We appreciate your trust in us.`;
+      `Thank you for visiting our ${branch.name} branch! We appreciate your trust in us.\n\n` +
+      BRANCH_CHANGE_HINT;
   }
 
   const waMessageId = await sendWhatsAppText(phoneNumber, text);
@@ -361,19 +392,32 @@ async function sendGenericError(supabase: SupabaseClient, phoneNumber: string) {
 }
 
 const ACTIVE_STATE_SYSTEM_PROMPT =
-  "You are a polite assistant for Emirat Uniform, a uniform company in the UAE. " +
-  "The customer has already selected their branch and received the Google review link. " +
-  "Just thank them warmly and briefly for any message they send, replying in their language " +
-  "(Arabic or English, matching them). Don't discuss products, pricing, or offer further help " +
-  "— this bot's only job was branch capture and review collection, and that is already done.";
+  "You are the WhatsApp assistant for Emirat Uniform, a uniform company in the UAE. Your only job " +
+  "is helping the customer select their branch and sending them the Google review link — you do " +
+  "not answer product questions, general questions, or anything else, even if asked directly. " +
+  "The customer has already completed branch selection and received their review link. For any " +
+  "message they send now, reply politely explaining that this assistant only helps with selecting " +
+  "a branch and sending the Google review link, and remind them they can type \"change branch\" / " +
+  "\"تغيير الفرع\" anytime if they'd like to switch branches. Always reply in BOTH Arabic and " +
+  "English together, Arabic first then English — every reply must show both languages, regardless " +
+  "of which language the customer wrote in. Keep it short, polite, and professional.";
+
+// Used only if the Claude API call itself fails — mirrors the shape Claude is
+// instructed to produce, so a fallback message still meets the "always
+// bilingual" requirement even when the model can't be reached.
+const ACTIVE_STATE_FALLBACK_REPLY =
+  "عذرًا، هذا المساعد مخصص فقط لاختيار الفرع وإرسال رابط تقييم جوجل. إذا كنت ترغب في تغيير فرعك، " +
+  "يمكنك كتابة 'تغيير الفرع' في أي وقت.\n\n" +
+  "Sorry, this assistant is only for selecting your branch and sending the Google review link. " +
+  "If you'd like to change your branch, just type 'change branch' anytime.";
 
 async function handleActiveConversation(supabase: SupabaseClient, phoneNumber: string, inboundBody: string) {
-  let replyText = "شكراً لك! / Thank you!";
+  let replyText = ACTIVE_STATE_FALLBACK_REPLY;
 
   try {
     const response = await anthropic.messages.create({
       model: "claude-sonnet-5",
-      max_tokens: 150,
+      max_tokens: 250,
       thinking: { type: "disabled" },
       system: ACTIVE_STATE_SYSTEM_PROMPT,
       messages: [{ role: "user", content: inboundBody || "(no text)" }],

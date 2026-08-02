@@ -4,6 +4,11 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Branch, LeadRow, Location } from "@/lib/types";
 import SendCampaignModal from "./SendCampaignModal";
+import Button from "./ui/Button";
+import Select from "./ui/Select";
+import Checkbox from "./ui/Checkbox";
+import EmptyState from "./ui/EmptyState";
+import { DownloadIcon, LeadsIcon, PaperPlaneIcon } from "./icons";
 
 interface LeadsTableProps {
   leads: LeadRow[];
@@ -95,14 +100,13 @@ export default function LeadsTable({ leads, locations, branches }: LeadsTablePro
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <select
+      <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <Select
           value={locationFilter}
           onChange={(e) => {
             setLocationFilter(e.target.value === "all" ? "all" : Number(e.target.value));
             setBranchFilter("all");
           }}
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm"
         >
           <option value="all">All locations</option>
           {locations.map((loc) => (
@@ -110,13 +114,12 @@ export default function LeadsTable({ leads, locations, branches }: LeadsTablePro
               {loc.name}
             </option>
           ))}
-        </select>
+        </Select>
 
-        <select
+        <Select
           value={branchFilter}
           onChange={(e) => setBranchFilter(e.target.value === "all" ? "all" : Number(e.target.value))}
           disabled={locationFilter === "all"}
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm disabled:opacity-50"
         >
           <option value="all">All branches</option>
           {branchOptions.map((b) => (
@@ -124,65 +127,83 @@ export default function LeadsTable({ leads, locations, branches }: LeadsTablePro
               {b.name}
             </option>
           ))}
-        </select>
+        </Select>
+
+        {selected.size > 0 && (
+          <span className="text-sm text-slate-500">{selected.size} selected</span>
+        )}
 
         <div className="ml-auto flex gap-2">
-          <button
-            onClick={handleExportCsv}
-            className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          >
+          <Button variant="secondary" onClick={handleExportCsv}>
+            <DownloadIcon className="h-4 w-4" />
             Export CSV
-          </button>
-          <button
-            onClick={() => setShowModal(true)}
-            disabled={selected.size === 0}
-            className="rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-50"
-          >
-            Send Campaign ({selected.size})
-          </button>
+          </Button>
+          <Button variant="primary" onClick={() => setShowModal(true)} disabled={selected.size === 0}>
+            <PaperPlaneIcon className="h-4 w-4" />
+            Send Campaign{selected.size > 0 ? ` (${selected.size})` : ""}
+          </Button>
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-        <table className="min-w-full divide-y divide-gray-200 text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="w-10 px-4 py-3">
-                <input type="checkbox" checked={allFilteredSelected} onChange={toggleSelectAll} />
-              </th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Name</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Phone</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Location</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Branch</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">First Seen</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {filteredLeads.map((lead) => (
-              <tr key={lead.phone_number} className="hover:bg-gray-50">
-                <td className="px-4 py-3">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(lead.phone_number)}
-                    onChange={() => toggleOne(lead.phone_number)}
-                  />
-                </td>
-                <td className="px-4 py-3 text-gray-900">{lead.name ?? "—"}</td>
-                <td className="px-4 py-3 text-gray-700">{lead.phone_number}</td>
-                <td className="px-4 py-3 text-gray-700">{lead.location_name ?? "—"}</td>
-                <td className="px-4 py-3 text-gray-700">{lead.branch_name ?? "—"}</td>
-                <td className="px-4 py-3 text-gray-500">{new Date(lead.first_seen).toLocaleDateString()}</td>
-              </tr>
-            ))}
-            {filteredLeads.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-gray-500">
-                  No leads match this filter.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+        {filteredLeads.length === 0 ? (
+          <EmptyState
+            icon={<LeadsIcon className="h-6 w-6" />}
+            title="No leads match this filter"
+            description="Try a different location or branch, or clear the filters."
+          />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-100 text-sm">
+              <thead className="bg-slate-50/60">
+                <tr>
+                  <th className="w-10 px-4 py-3">
+                    <Checkbox checked={allFilteredSelected} onChange={toggleSelectAll} />
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Name
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Phone
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Location
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    Branch
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
+                    First Seen
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredLeads.map((lead) => (
+                  <tr
+                    key={lead.phone_number}
+                    className={`transition-colors hover:bg-indigo-50/40 ${
+                      selected.has(lead.phone_number) ? "bg-indigo-50/60" : "odd:bg-white even:bg-slate-50/40"
+                    }`}
+                  >
+                    <td className="px-4 py-3.5">
+                      <Checkbox
+                        checked={selected.has(lead.phone_number)}
+                        onChange={() => toggleOne(lead.phone_number)}
+                      />
+                    </td>
+                    <td className="px-4 py-3.5 font-medium text-slate-800">{lead.name ?? "—"}</td>
+                    <td className="px-4 py-3.5 text-slate-600">{lead.phone_number}</td>
+                    <td className="px-4 py-3.5 text-slate-600">{lead.location_name ?? "—"}</td>
+                    <td className="px-4 py-3.5 text-slate-600">{lead.branch_name ?? "—"}</td>
+                    <td className="px-4 py-3.5 text-slate-400">
+                      {new Date(lead.first_seen).toLocaleDateString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {showModal && (
