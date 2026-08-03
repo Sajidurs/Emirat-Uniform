@@ -24,14 +24,17 @@ const BRAND_FOOTER = "يونيفورم الإمارات / Emirat Uniform";
 const SELECT_BUTTON = "اختيار / Select";
 
 // Exact-match (case-insensitive, trimmed) phrases that restart branch selection
-// regardless of the customer's current state.
+// regardless of the customer's current state — including after the
+// post-branch-action flow completes (state = 'active').
 const BRANCH_CHANGE_TRIGGERS = new Set([
   "change branch",
   "change location",
+  "main menu",
   "غير الفرع",
   "غيّر الفرع",
   "تغيير الفرع",
   "تغيير الموقع",
+  "القائمة الرئيسية",
 ]);
 
 function isBranchChangeTrigger(text: string): boolean {
@@ -79,7 +82,9 @@ const CUSTOMER_SERVICE_MESSAGE =
 
 const POST_ACTION_CLOSING_MESSAGE =
   "شكراً لزيارتكم! نتطلع لخدمتكم دائماً.\n" +
-  "Thank you for your visit! We look forward to serving you again soon.";
+  "Thank you for your visit! We look forward to serving you again soon.\n\n" +
+  "يمكنك كتابة 'تغيير الفرع' لتغيير فرعك، أو 'القائمة الرئيسية' للعودة إلى القائمة في أي وقت.\n" +
+  "You can type 'change branch' to switch branches, or 'main menu' to return to the menu anytime.";
 
 /**
  * Resolves a customer's reply at the 'awaiting_post_branch_action' state to
@@ -539,8 +544,9 @@ async function sendReviewLink(supabase: SupabaseClient, phoneNumber: string, bra
   let text: string;
   if (branch.gmb_review_link) {
     text =
-      `تفضل، هذا رابط تقييم فرع ${branch.name} على جوجل:\n${branch.gmb_review_link}\n\n` +
-      `Here's the Google review link for our ${branch.name} branch:\n${branch.gmb_review_link}`;
+      `تفضل، هذا رابط تقييم فرع ${branch.name} على جوجل.\n\n` +
+      `Here's the Google review link for our ${branch.name} branch:\n\n` +
+      branch.gmb_review_link;
   } else {
     console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_review_link set`);
     text =
@@ -555,8 +561,9 @@ async function sendMapLink(supabase: SupabaseClient, phoneNumber: string, branch
   let text: string;
   if (branch.gmb_map_link) {
     text =
-      `تفضل، هذا موقع فرع ${branch.name} على الخريطة:\n${branch.gmb_map_link}\n\n` +
-      `Here's the map location for our ${branch.name} branch:\n${branch.gmb_map_link}`;
+      `تفضل، هذا موقع فرع ${branch.name} على الخريطة.\n\n` +
+      `Here's the map location for our ${branch.name} branch:\n\n` +
+      branch.gmb_map_link;
   } else {
     console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_map_link set`);
     text =

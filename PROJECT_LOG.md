@@ -24,6 +24,9 @@ instead of silently building a broken Meta API URL — see the debugging notes i
 history below if template creation still errors after checking this. Branch confirmation no
 longer auto-sends the review link — it now shows a 4-option post-visit menu (review / map /
 customer service / back to main list) via a new 'awaiting_post_branch_action' customer state.
+A "main menu" / "القائمة الرئيسية" trigger phrase now also restarts branch selection from any
+state (alongside "change branch" / "تغيير الفرع"), and the post-visit closing message mentions
+both.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -33,6 +36,33 @@ customer service / back to main list) via a new 'awaiting_post_branch_action' cu
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-02 — Fix duplicate link bug + add "main menu" trigger phrase
+- What changed:
+  - Fixed sendReviewLink(): gmb_review_link was being interpolated into both the Arabic line and
+    the English line (the same duplication bug pattern seen earlier with the branch-confirmation
+    message) — restructured to a single shared link placed once, after both language lines.
+  - While fixing that, found and fixed the identical bug in sendMapLink() (not explicitly
+    reported, but the same copy-pasted pattern with gmb_map_link) — same fix applied there too.
+  - Added "main menu" and "القائمة الرئيسية" to BRANCH_CHANGE_TRIGGERS. Since
+    isBranchChangeTrigger() already runs unconditionally before the customer.state routing chain
+    in handleInboundMessage() (existing behavior, unchanged), this required no other code
+    changes — the new phrases restart branch selection from any state, including 'active', for
+    free.
+  - Updated POST_ACTION_CLOSING_MESSAGE (sent after post-visit options 1-3) to add a bilingual
+    line pointing at both restart phrases: "يمكنك كتابة 'تغيير الفرع' لتغيير فرعك، أو 'القائمة
+    الرئيسية' للعودة إلى القائمة في أي وقت." / "You can type 'change branch' to switch branches,
+    or 'main menu' to return to the menu anytime."
+- Why: The review link (and map link) were unintentionally sent twice in one message; and
+  customers had no worded way back to the main menu after finishing the post-visit flow other
+  than "change branch", which restarts branch selection but doesn't read as "go to the menu."
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. Confirmed by grep that gmb_review_link and gmb_map_link each now appear exactly once in
+  their respective message-building code. Re-ran the isolated trigger-phrase unit test (same
+  approach as the earlier "change branch" change — no live webhook payload, since that would hit
+  the real WhatsApp/Meta API) with the two new phrases added: exact match, case-insensitivity,
+  trimming, and non-matches ("main menu please") all passed.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-02 — Post-branch-selection action menu (review / map / customer service / main list)
 - What changed:
