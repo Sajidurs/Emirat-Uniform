@@ -16,15 +16,19 @@ create table if not exists branches (
   id bigint generated always as identity primary key,
   location_id bigint not null references locations (id) on delete cascade,
   name text not null,
-  gmb_review_link text
+  gmb_review_link text,
+  gmb_map_link text
 );
 
 create index if not exists idx_branches_location_id on branches (location_id);
 
 -- =========================================================
 -- customers
--- one row per WhatsApp phone number; `state` tracks conversation progress
--- (e.g. 'new', 'awaiting_location', 'awaiting_branch', 'awaiting_name', 'done')
+-- one row per WhatsApp phone number; `state` tracks conversation progress:
+-- 'new' -> 'awaiting_location' -> 'awaiting_branch:<location_id>' ->
+-- 'awaiting_post_branch_action' (post-branch-selection menu: review link /
+-- map link / customer service / back to main list) -> 'active' (free-form,
+-- handled by the Claude fallback)
 -- =========================================================
 create table if not exists customers (
   phone_number text primary key,

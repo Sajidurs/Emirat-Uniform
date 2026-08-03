@@ -23,11 +23,6 @@ const LOCATION_LABELS_AR: Record<string, string> = {
 const BRAND_FOOTER = "يونيفورم الإمارات / Emirat Uniform";
 const SELECT_BUTTON = "اختيار / Select";
 
-// Bilingual hint appended to the branch-confirmation thank-you message.
-const BRANCH_CHANGE_HINT =
-  "إذا كنت ترغب في تغيير الفرع لاحقًا، اكتب 'تغيير الفرع' في أي وقت.\n" +
-  "If you'd like to change your branch later, just type 'change branch' anytime.";
-
 // Exact-match (case-insensitive, trimmed) phrases that restart branch selection
 // regardless of the customer's current state.
 const BRANCH_CHANGE_TRIGGERS = new Set([
@@ -43,6 +38,73 @@ function isBranchChangeTrigger(text: string): boolean {
   return BRANCH_CHANGE_TRIGGERS.has(text.trim().toLowerCase());
 }
 
+// ---------- Post-branch-selection action menu ----------
+// Shown once a branch is confirmed, instead of auto-sending the review link.
+// Row titles are English-only: the Arabic phrasing for "Talk to customer
+// service" / "Go to main list" both exceed WhatsApp's 24-character row title
+// limit, so Arabic goes in the row description (72-char limit) instead —
+// every row still shows both languages, just split across title/description
+// rather than combined in the title the way the (short) location names are.
+type PostBranchAction = "review" | "map" | "service" | "mainlist";
+
+interface PostBranchActionRow {
+  id: string;
+  action: PostBranchAction;
+  titleEn: string;
+  descAr: string;
+}
+
+const POST_BRANCH_ACTION_ROWS: PostBranchActionRow[] = [
+  { id: "postaction_review", action: "review", titleEn: "Submit your review", descAr: "قيّم تجربتك في الفرع" },
+  { id: "postaction_map", action: "map", titleEn: "Open the location", descAr: "الذهاب إلى الموقع" },
+  {
+    id: "postaction_service",
+    action: "service",
+    titleEn: "Talk to customer service",
+    descAr: "التحدث إلى أحد موظفي خدمة العملاء",
+  },
+  {
+    id: "postaction_mainlist",
+    action: "mainlist",
+    titleEn: "Go to main list",
+    descAr: "العودة إلى القائمة الرئيسية",
+  },
+];
+
+const CUSTOMER_SERVICE_NUMBER = "0509292916";
+
+const CUSTOMER_SERVICE_MESSAGE =
+  `يمكنك التواصل مع خدمة العملاء على الرقم ${CUSTOMER_SERVICE_NUMBER}\n` +
+  `You can reach our customer service at ${CUSTOMER_SERVICE_NUMBER}`;
+
+const POST_ACTION_CLOSING_MESSAGE =
+  "شكراً لزيارتكم! نتطلع لخدمتكم دائماً.\n" +
+  "Thank you for your visit! We look forward to serving you again soon.";
+
+/**
+ * Resolves a customer's reply at the 'awaiting_post_branch_action' state to
+ * one of the 4 menu actions — matching a list_reply id, a numbered text
+ * reply ("1".."4" in list order), or the row's own title/description text.
+ * Returns null if nothing matches, so the menu can be re-shown.
+ */
+function resolvePostBranchAction(listReplyId: string | null, inboundBody: string): PostBranchAction | null {
+  if (listReplyId) {
+    const row = POST_BRANCH_ACTION_ROWS.find((r) => r.id === listReplyId);
+    if (row) return row.action;
+  }
+
+  const normalized = inboundBody.trim();
+  const normalizedLower = normalized.toLowerCase();
+
+  const numberedIndex = ["1", "2", "3", "4"].indexOf(normalized);
+  if (numberedIndex !== -1) return POST_BRANCH_ACTION_ROWS[numberedIndex].action;
+
+  const textMatch = POST_BRANCH_ACTION_ROWS.find(
+    (r) => r.titleEn.toLowerCase() === normalizedLower || r.descAr === normalized
+  );
+  return textMatch?.action ?? null;
+}
+
 interface Customer {
   phone_number: string;
   name: string | null;
@@ -54,6 +116,7 @@ interface Branch {
   id: number;
   name: string;
   gmb_review_link: string | null;
+  gmb_map_link: string | null;
 }
 
 interface WhatsAppMessage {
@@ -180,8 +243,7 @@ async function handleInboundMessage(
     : null;
 
   if (customer.state === "new") {
-    await sendLocationList(supabase, phoneNumber);
-    await supabase.from("customers").update({ state: "awaiting_location" }).eq("phone_number", phoneNumber);
+    await restartToLocationSelection(supabase, phoneNumber);
     return;
   }
 
@@ -204,8 +266,19 @@ async function handleInboundMessage(
     return;
   }
 
+  if (customer.state === "awaiting_post_branch_action") {
+    await handlePostBranchAction(supabase, phoneNumber, customer.branch_id, listReply?.id ?? null, inboundBody);
+    return;
+  }
+
   // state === "active" (or anything else): hand off to Claude for a brief reply
   await handleActiveConversation(supabase, phoneNumber, inboundBody);
+}
+
+/** Sends the location list and moves the customer to 'awaiting_location'. */
+async function restartToLocationSelection(supabase: SupabaseClient, phoneNumber: string) {
+  await sendLocationList(supabase, phoneNumber);
+  await supabase.from("customers").update({ state: "awaiting_location" }).eq("phone_number", phoneNumber);
 }
 
 function extractMessageBody(message: WhatsAppMessage): string {
@@ -286,7 +359,7 @@ async function handleLocationSelected(supabase: SupabaseClient, phoneNumber: str
 
   const { data: branches } = await supabase
     .from("branches")
-    .select("id, name, gmb_review_link")
+    .select("id, name, gmb_review_link, gmb_map_link")
     .eq("location_id", locationId);
 
   if (!branches || branches.length === 0) {
@@ -312,7 +385,7 @@ async function sendBranchListForLocation(
 ) {
   const { data: branches } = await supabase
     .from("branches")
-    .select("id, name, gmb_review_link")
+    .select("id, name, gmb_review_link, gmb_map_link")
     .eq("location_id", locationId);
 
   if (!branches || branches.length === 0) {
@@ -351,7 +424,7 @@ async function handleBranchSelected(supabase: SupabaseClient, phoneNumber: strin
 
   const { data: branch } = await supabase
     .from("branches")
-    .select("id, name, gmb_review_link")
+    .select("id, name, gmb_review_link, gmb_map_link")
     .eq("id", branchId)
     .maybeSingle();
 
@@ -364,26 +437,144 @@ async function handleBranchSelected(supabase: SupabaseClient, phoneNumber: strin
   await confirmBranch(supabase, phoneNumber, branch as Branch);
 }
 
+/**
+ * Branch confirmed: instead of auto-sending the review link, show the
+ * post-branch-selection action menu (review / map / customer service / back
+ * to main list) and move the customer to 'awaiting_post_branch_action'.
+ */
 async function confirmBranch(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
-  await supabase.from("customers").update({ branch_id: branch.id, state: "active" }).eq("phone_number", phoneNumber);
+  await supabase
+    .from("customers")
+    .update({ branch_id: branch.id, state: "awaiting_post_branch_action" })
+    .eq("phone_number", phoneNumber);
 
+  await sendPostBranchActionList(supabase, phoneNumber, branch.name);
+}
+
+async function sendPostBranchActionList(
+  supabase: SupabaseClient,
+  phoneNumber: string,
+  branchName?: string,
+  isRetry = false
+) {
+  const rows: ListRow[] = POST_BRANCH_ACTION_ROWS.map((r) => ({
+    id: r.id,
+    title: r.titleEn,
+    description: r.descAr,
+  }));
+
+  const body =
+    !isRetry && branchName
+      ? `شكراً لزيارتكم فرع ${branchName}! من فضلك اختر أحد الخيارات التالية.\n` +
+        `Thank you for visiting our ${branchName} branch! Please choose one of the following options.`
+      : "من فضلك اختر أحد الخيارات من القائمة أدناه.\nPlease select one of the options from the list below.";
+
+  const waMessageId = await sendWhatsAppList(phoneNumber, {
+    header: "ماذا تريد أن تفعل؟ / What would you like to do?",
+    body,
+    footer: BRAND_FOOTER,
+    button: SELECT_BUTTON,
+    sections: [{ title: "الخيارات / Options", rows }],
+  });
+  await logMessage(supabase, phoneNumber, "outbound", body, waMessageId);
+}
+
+/** Handles a reply while the customer is at 'awaiting_post_branch_action'. */
+async function handlePostBranchAction(
+  supabase: SupabaseClient,
+  phoneNumber: string,
+  branchId: number | null,
+  listReplyId: string | null,
+  inboundBody: string
+) {
+  const action = resolvePostBranchAction(listReplyId, inboundBody);
+
+  if (!action) {
+    await sendPostBranchActionList(supabase, phoneNumber, undefined, true);
+    return;
+  }
+
+  if (action === "mainlist") {
+    // Reuses the exact same restart logic as the "change branch" trigger phrase.
+    await restartToLocationSelection(supabase, phoneNumber);
+    return;
+  }
+
+  if (!branchId) {
+    console.warn("Customer reached awaiting_post_branch_action with no branch_id set");
+    await sendGenericError(supabase, phoneNumber);
+    return;
+  }
+
+  const { data: branch } = await supabase
+    .from("branches")
+    .select("id, name, gmb_review_link, gmb_map_link")
+    .eq("id", branchId)
+    .maybeSingle();
+
+  if (!branch) {
+    console.warn(`Branch not found for id=${branchId}`);
+    await sendGenericError(supabase, phoneNumber);
+    return;
+  }
+
+  const typedBranch = branch as Branch;
+
+  if (action === "review") {
+    await sendReviewLink(supabase, phoneNumber, typedBranch);
+  } else if (action === "map") {
+    await sendMapLink(supabase, phoneNumber, typedBranch);
+  } else {
+    await sendCustomerServiceInfo(supabase, phoneNumber);
+  }
+
+  // Options 1-3 complete the post-branch flow; option 4 (handled above) skips
+  // both the 'active' transition and the closing message since it restarts
+  // branch selection instead.
+  await supabase.from("customers").update({ state: "active" }).eq("phone_number", phoneNumber);
+  await sendPostActionClosing(supabase, phoneNumber);
+}
+
+async function sendReviewLink(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
   let text: string;
   if (branch.gmb_review_link) {
     text =
-      `شكراً لزيارتكم فرع ${branch.name}! نقدّر تقييمكم لنا.\n\n` +
-      `Thank you for visiting our ${branch.name} branch! We'd love it if you could leave us a review:\n\n` +
-      `${branch.gmb_review_link}\n\n` +
-      BRANCH_CHANGE_HINT;
+      `تفضل، هذا رابط تقييم فرع ${branch.name} على جوجل:\n${branch.gmb_review_link}\n\n` +
+      `Here's the Google review link for our ${branch.name} branch:\n${branch.gmb_review_link}`;
   } else {
     console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_review_link set`);
     text =
-      `شكراً لزيارتكم فرع ${branch.name}! نقدّر ثقتكم بنا.\n\n` +
-      `Thank you for visiting our ${branch.name} branch! We appreciate your trust in us.\n\n` +
-      BRANCH_CHANGE_HINT;
+      "عذراً، رابط التقييم غير متوفر حالياً.\nSorry, the review link isn't available yet.";
   }
 
   const waMessageId = await sendWhatsAppText(phoneNumber, text);
   await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
+}
+
+async function sendMapLink(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
+  let text: string;
+  if (branch.gmb_map_link) {
+    text =
+      `تفضل، هذا موقع فرع ${branch.name} على الخريطة:\n${branch.gmb_map_link}\n\n` +
+      `Here's the map location for our ${branch.name} branch:\n${branch.gmb_map_link}`;
+  } else {
+    console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_map_link set`);
+    text =
+      "عذراً، رابط الموقع غير متوفر حالياً.\nSorry, the location link isn't available yet.";
+  }
+
+  const waMessageId = await sendWhatsAppText(phoneNumber, text);
+  await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
+}
+
+async function sendCustomerServiceInfo(supabase: SupabaseClient, phoneNumber: string) {
+  const waMessageId = await sendWhatsAppText(phoneNumber, CUSTOMER_SERVICE_MESSAGE);
+  await logMessage(supabase, phoneNumber, "outbound", CUSTOMER_SERVICE_MESSAGE, waMessageId);
+}
+
+async function sendPostActionClosing(supabase: SupabaseClient, phoneNumber: string) {
+  const waMessageId = await sendWhatsAppText(phoneNumber, POST_ACTION_CLOSING_MESSAGE);
+  await logMessage(supabase, phoneNumber, "outbound", POST_ACTION_CLOSING_MESSAGE, waMessageId);
 }
 
 async function sendGenericError(supabase: SupabaseClient, phoneNumber: string) {
@@ -394,23 +585,24 @@ async function sendGenericError(supabase: SupabaseClient, phoneNumber: string) {
 
 const ACTIVE_STATE_SYSTEM_PROMPT =
   "You are the WhatsApp assistant for Emirat Uniform, a uniform company in the UAE. Your only job " +
-  "is helping the customer select their branch and sending them the Google review link — you do " +
-  "not answer product questions, general questions, or anything else, even if asked directly. " +
-  "The customer has already completed branch selection and received their review link. For any " +
-  "message they send now, reply politely explaining that this assistant only helps with selecting " +
-  "a branch and sending the Google review link, and remind them they can type \"change branch\" / " +
-  "\"تغيير الفرع\" anytime if they'd like to switch branches. Always reply in BOTH Arabic and " +
-  "English together, Arabic first then English — every reply must show both languages, regardless " +
-  "of which language the customer wrote in. Keep it short, polite, and professional.";
+  "is helping the customer select their branch and then submit a review, get the branch location, " +
+  "or reach customer service — you do not answer product questions, general questions, or anything " +
+  "else, even if asked directly. The customer has already completed branch selection and used the " +
+  "post-visit options menu. For any message they send now, reply politely explaining that this " +
+  "assistant only helps with branch selection and the review/location/customer-service options, " +
+  "and remind them they can type \"change branch\" / \"تغيير الفرع\" anytime if they'd like to " +
+  "switch branches. Always reply in BOTH Arabic and English together, Arabic first then English — " +
+  "every reply must show both languages, regardless of which language the customer wrote in. Keep " +
+  "it short, polite, and professional.";
 
 // Used only if the Claude API call itself fails — mirrors the shape Claude is
 // instructed to produce, so a fallback message still meets the "always
 // bilingual" requirement even when the model can't be reached.
 const ACTIVE_STATE_FALLBACK_REPLY =
-  "عذرًا، هذا المساعد مخصص فقط لاختيار الفرع وإرسال رابط تقييم جوجل. إذا كنت ترغب في تغيير فرعك، " +
-  "يمكنك كتابة 'تغيير الفرع' في أي وقت.\n\n" +
-  "Sorry, this assistant is only for selecting your branch and sending the Google review link. " +
-  "If you'd like to change your branch, just type 'change branch' anytime.";
+  "عذرًا، هذا المساعد مخصص فقط لاختيار الفرع وخيارات التقييم والموقع وخدمة العملاء. إذا كنت ترغب " +
+  "في تغيير فرعك، يمكنك كتابة 'تغيير الفرع' في أي وقت.\n\n" +
+  "Sorry, this assistant is only for branch selection and the review/location/customer-service " +
+  "options. If you'd like to change your branch, just type 'change branch' anytime.";
 
 async function handleActiveConversation(supabase: SupabaseClient, phoneNumber: string, inboundBody: string) {
   let replyText = ACTIVE_STATE_FALLBACK_REPLY;

@@ -4,7 +4,8 @@
 A WhatsApp bot for Emirat Uniform, a UAE uniform company with 13 branches across 7 locations
 (Abu Dhabi, Al Ain, Dubai, Sharjah, Ajman, RAK, Fujairah). Customers scan a single shared
 WhatsApp QR code in-branch, are asked which location and branch they're at, have their
-name/phone/branch saved as a lead, and receive that branch's Google My Business review link.
+name/phone/branch saved as a lead, and are then shown a post-visit menu (submit a Google review,
+open the branch's map location, talk to customer service, or go back to the main location list).
 Separately, an admin dashboard lets staff filter leads by branch, send WhatsApp marketing
 campaigns using Meta-approved templates, submit new templates for Meta approval, and view
 per-campaign delivery statistics (sent, delivered, failed, failure reasons).
@@ -20,7 +21,9 @@ fallback for off-topic messages from active customers. Conversations page is now
 WhatsApp-Web-style two-pane layout (list always visible, thread scrolls independently).
 Template creation now fails loudly with a clear error if WHATSAPP_BUSINESS_ACCOUNT_ID is unset,
 instead of silently building a broken Meta API URL — see the debugging notes in the change
-history below if template creation still errors after checking this.
+history below if template creation still errors after checking this. Branch confirmation no
+longer auto-sends the review link — it now shows a 4-option post-visit menu (review / map /
+customer service / back to main list) via a new 'awaiting_post_branch_action' customer state.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -30,6 +33,56 @@ history below if template creation still errors after checking this.
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-02 — Post-branch-selection action menu (review / map / customer service / main list)
+- What changed:
+  - Branch confirmation (confirmBranch()) no longer auto-sends the thank-you + review link.
+    Instead it moves the customer to a new state, 'awaiting_post_branch_action', and sends a
+    bilingual 4-option interactive list (sendPostBranchActionList()): "Submit your review" /
+    قيّم تجربتك في الفرع, "Open the location" / الذهاب إلى الموقع, "Talk to customer service" /
+    التحدث إلى أحد موظفي خدمة العملاء, "Go to main list" / العودة إلى القائمة الرئيسية. Row
+    titles are English (WhatsApp's 24-char row title limit is too tight for the "customer
+    service" and "main list" Arabic phrasing — both run ~27-33 chars), with the Arabic phrasing
+    in each row's description (72-char limit, plenty of room) — noted in a code comment since
+    it's the one place in this file where a row doesn't show combined "Arabic / English" in the
+    title itself.
+  - Added a new branches.gmb_map_link column (nullable text, same pattern as gmb_review_link) —
+    updated supabase/schema.sql for reference; left NULL for all 13 branches, to be filled in
+    later. Since schema.sql isn't being re-run against the live DB for this change, the exact
+    `alter table branches add column if not exists gmb_map_link text;` was provided separately
+    for manual application.
+  - handleInboundMessage() routes the 'awaiting_post_branch_action' state to a new
+    handlePostBranchAction(), which resolves the reply via resolvePostBranchAction() — matching
+    a list_reply id, a numbered text reply ("1"-"4" in list order), or the row's own title/
+    description text (case-insensitive for the English title). An unresolved reply re-shows the
+    same 4-option list rather than falling through to the Claude fallback, matching the existing
+    resend-on-unclear-reply pattern already used for the location/branch lists.
+  - Option 1 sends the branch's gmb_review_link (or a polite "not available yet" message if
+    NULL, same pattern as the old review-link fallback). Option 2 sends gmb_map_link the same
+    way. Option 3 sends a fixed bilingual message with a hardcoded customer service number
+    (0509292916, a constant — same number for every branch, not a database column). Options 1-3
+    all then set state='active' and send the fixed bilingual closing message ("شكراً لزيارتكم! ..."
+    / "Thank you for your visit! ..."). Option 4 ("Go to main list") does not get the closing
+    message and does not transition to 'active' — it calls a new restartToLocationSelection()
+    helper (extracted from the former inline 'new'-state handling in handleInboundMessage) that
+    is now shared verbatim between the 'new'-state branch, the "change branch" trigger phrase
+    path, and this option — genuinely the same code, not just similar logic.
+  - Removed the now-unused BRANCH_CHANGE_HINT constant (its only call site, the old
+    confirmBranch() thank-you message, no longer exists). Updated ACTIVE_STATE_SYSTEM_PROMPT and
+    ACTIVE_STATE_FALLBACK_REPLY's wording, since they previously assumed the customer "already...
+    received their review link" — no longer reliably true now that review/map/service are
+    separate menu choices; reworded to reference the post-visit options menu generally instead.
+- Why: Customers were being auto-sent the Google review link immediately after branch selection
+  with no other options; the new menu lets them also get directions, reach customer service, or
+  restart branch selection, without changing anything about how branch selection itself works.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. As with the earlier branch-change-trigger change, did not fire a live webhook payload
+  end-to-end (would call the real WhatsApp/Meta API with real side effects). Instead unit-tested
+  resolvePostBranchAction()'s matching logic in isolation — list_reply ids, numbered replies
+  ("1"-"4", including with stray whitespace), case-insensitive English title matches, exact
+  Arabic description matches, and non-matches (unrelated text, empty string, out-of-range number,
+  unrecognized list_reply id) — all 17 cases passed.
+- Files touched: app/api/whatsapp/route.ts, supabase/schema.sql, PROJECT_LOG.md
 
 ### 2026-08-02 — Debug: template creation "Object with ID 'undefined' does not exist"
 - What was checked: (1) app/api/dashboard/templates/create/route.ts and lib/meta-templates.ts
