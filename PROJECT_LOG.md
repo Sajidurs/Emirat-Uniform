@@ -25,8 +25,8 @@ history below if template creation still errors after checking this. Branch conf
 longer auto-sends the review link — it now shows a 4-option post-visit menu (review / map /
 customer service / back to main list) via a new 'awaiting_post_branch_action' customer state.
 A "main menu" / "القائمة الرئيسية" trigger phrase now also restarts branch selection from any
-state (alongside "change branch" / "تغيير الفرع"), and the post-visit closing message mentions
-both.
+state (alongside "change branch" / "تغيير الفرع"), and the post-visit closing message and the
+general 'active'-state Claude fallback (prompt + failure-fallback reply) all mention both.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -36,6 +36,27 @@ both.
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-02 — Mention "main menu" in the general active-state Claude fallback too
+- What changed: ACTIVE_STATE_SYSTEM_PROMPT and ACTIVE_STATE_FALLBACK_REPLY (used for any
+  off-topic message once a customer is fully 'active', as opposed to the post-visit closing
+  message from the previous change) previously only told the customer they could type "change
+  branch" / "تغيير الفرع". Both now also mention "main menu" / "القائمة الرئيسية": the system
+  prompt instructs Claude to remind customers of both options ("...to switch branches, or 'main
+  menu' / 'القائمة الرئيسية' to see their options again"), and the static failure-fallback reply
+  (used only if the Claude API call itself errors) carries the same two-option wording directly
+  in both languages, Arabic first.
+- Why: The "main menu" trigger phrase was added in the previous change, but the two places that
+  actually tell a customer what commands exist — the system prompt guiding Claude's replies, and
+  the hardcoded fallback used when Claude is unreachable — still only advertised "change branch",
+  so customers reaching the general active state had no way to learn about "main menu" unless
+  they already knew about the post-visit closing message.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. This is prompt/copy text with no branching logic, so there's nothing meaningful to unit
+  test in isolation the way the earlier trigger-phrase and duplicate-link fixes were — verified
+  by reading the concatenated string output directly to confirm correct spacing/grammar and that
+  both languages carry the same two-option meaning.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-02 — Fix duplicate link bug + add "main menu" trigger phrase
 - What changed:

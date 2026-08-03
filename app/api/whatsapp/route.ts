@@ -597,8 +597,9 @@ const ACTIVE_STATE_SYSTEM_PROMPT =
   "else, even if asked directly. The customer has already completed branch selection and used the " +
   "post-visit options menu. For any message they send now, reply politely explaining that this " +
   "assistant only helps with branch selection and the review/location/customer-service options, " +
-  "and remind them they can type \"change branch\" / \"تغيير الفرع\" anytime if they'd like to " +
-  "switch branches. Always reply in BOTH Arabic and English together, Arabic first then English — " +
+  "and remind them they can type \"change branch\" / \"تغيير الفرع\" to switch branches, or " +
+  "\"main menu\" / \"القائمة الرئيسية\" to see their options again. Always reply in BOTH Arabic " +
+  "and English together, Arabic first then English — " +
   "every reply must show both languages, regardless of which language the customer wrote in. Keep " +
   "it short, polite, and professional.";
 
@@ -606,10 +607,11 @@ const ACTIVE_STATE_SYSTEM_PROMPT =
 // instructed to produce, so a fallback message still meets the "always
 // bilingual" requirement even when the model can't be reached.
 const ACTIVE_STATE_FALLBACK_REPLY =
-  "عذرًا، هذا المساعد مخصص فقط لاختيار الفرع وخيارات التقييم والموقع وخدمة العملاء. إذا كنت ترغب " +
-  "في تغيير فرعك، يمكنك كتابة 'تغيير الفرع' في أي وقت.\n\n" +
+  "عذرًا، هذا المساعد مخصص فقط لاختيار الفرع وخيارات التقييم والموقع وخدمة العملاء. يمكنك كتابة " +
+  "'تغيير الفرع' لتغيير فرعك، أو 'القائمة الرئيسية' لرؤية خياراتك مرة أخرى.\n\n" +
   "Sorry, this assistant is only for branch selection and the review/location/customer-service " +
-  "options. If you'd like to change your branch, just type 'change branch' anytime.";
+  "options. You can type 'change branch' to switch branches, or 'main menu' to see your options " +
+  "again.";
 
 async function handleActiveConversation(supabase: SupabaseClient, phoneNumber: string, inboundBody: string) {
   let replyText = ACTIVE_STATE_FALLBACK_REPLY;
