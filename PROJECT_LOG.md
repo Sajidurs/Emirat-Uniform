@@ -18,6 +18,9 @@ The earlier "nothing run yet" status in this log was stale as of this check. The
 supports a "change branch" trigger phrase (any state, any time) and a stricter bilingual-only
 fallback for off-topic messages from active customers. Conversations page is now a proper
 WhatsApp-Web-style two-pane layout (list always visible, thread scrolls independently).
+Template creation now fails loudly with a clear error if WHATSAPP_BUSINESS_ACCOUNT_ID is unset,
+instead of silently building a broken Meta API URL — see the debugging notes in the change
+history below if template creation still errors after checking this.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -27,6 +30,41 @@ WhatsApp-Web-style two-pane layout (list always visible, thread scrolls independ
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-02 — Debug: template creation "Object with ID 'undefined' does not exist"
+- What was checked: (1) app/api/dashboard/templates/create/route.ts and lib/meta-templates.ts
+  both read `process.env.WHATSAPP_BUSINESS_ACCOUNT_ID` — exact name, no typo. (2) There is no
+  centralized required-env-vars validation/schema anywhere in this project (grepped for
+  `env*.ts`/similar — only node_modules matches) — this project has never had one, so there was
+  nothing pre-existing to have missed adding this var to. (3) Actually ran this project's real
+  `.env.local` through Next.js's own env loader (`@next/env`'s `loadEnvConfig`, the exact function
+  `next dev` calls) in a standalone script: it resolved `WHATSAPP_BUSINESS_ACCOUNT_ID` correctly
+  as a clean 16-character string with no stray whitespace. So as configured right now, a freshly
+  started `next dev` process reading this exact file would not produce `undefined` — the bug, if
+  still reproducible, points at either (a) a stale `next dev` process from before the env change
+  still running/listening (a `restart` that didn't actually kill the old process is the most
+  common cause of exactly this symptom), or (b) this was hit against a deployed environment
+  (Vercel) rather than local dev — `.env.local` is gitignored and never deployed, so a var added
+  there doesn't exist in production until it's also added to the platform's own environment
+  variable settings.
+- Found and fixed along the way: README.md's setup and deploy steps both referenced
+  `.env.local.example`, which was deleted from this repo during the initial dashboard build
+  (2026-08-02 admin dashboard entry, below) and never recreated — anyone deploying by following
+  the README's step 7 literally had no file to read variables from, which is exactly the kind of
+  gap that lets a newly-added var like `WHATSAPP_BUSINESS_ACCOUNT_ID` go unset on a deployment
+  platform. Updated both steps to point at the (already-accurate) variable table in step 2
+  instead, and added an explicit note to double-check Vercel's env settings whenever a new
+  variable is added locally.
+- What changed in code: createMetaTemplate() in lib/meta-templates.ts now reads
+  `WHATSAPP_BUSINESS_ACCOUNT_ID` into a local `businessAccountId` variable, logs it via
+  `console.log` (using `JSON.stringify` rather than a template literal, so a missing var prints
+  as `undefined` and any stray leading/trailing whitespace would show up as visible quoted spaces)
+  immediately before building the Meta API URL, and — if it's falsy — returns immediately with a
+  clear `error` message instead of proceeding to call `fetch()` against a URL containing the
+  literal string "undefined". This turns a confusing Meta-side "Object with ID 'undefined' does
+  not exist" response into an immediate, unambiguous server-side error naming the actual missing
+  variable.
+- Files touched: lib/meta-templates.ts, README.md, PROJECT_LOG.md
 
 ### 2026-08-02 — Conversations page: WhatsApp-Web-style fixed two-pane layout
 - What changed: /dashboard/conversations was two independent routes (the list page and the

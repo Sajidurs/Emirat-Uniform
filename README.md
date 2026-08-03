@@ -14,11 +14,7 @@ project purpose, architecture, and change history.
 
 2. **Fill in environment variables**
 
-   Copy the example file and fill in real values:
-
-   ```bash
-   cp .env.local.example .env.local
-   ```
+   Create `.env.local` in the project root with these variables filled in with real values:
 
    | Variable | Description |
    | --- | --- |
@@ -63,5 +59,8 @@ project purpose, architecture, and change history.
 
 7. **Deploy to Vercel**
 
-   Connect the repo in Vercel and set all variables from `.env.local.example` in the
-   project's Environment Variables settings before the first deploy.
+   Connect the repo in Vercel and set all variables from the table in step 2 above in the
+   project's Environment Variables settings before the first deploy. `.env.local` is
+   gitignored and never deployed, so every variable must be re-entered there separately —
+   double-check this whenever a new variable is added locally (e.g. `WHATSAPP_BUSINESS_ACCOUNT_ID`
+   was added after the initial deploy setup in some environments and can be easy to miss).

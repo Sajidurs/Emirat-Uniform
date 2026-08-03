@@ -37,7 +37,29 @@ export async function createMetaTemplate(options: {
   language: string;
 }): Promise<CreateMetaTemplateResult> {
   const metaName = sanitizeTemplateName(options.name);
-  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${process.env.WHATSAPP_BUSINESS_ACCOUNT_ID}/message_templates`;
+  const businessAccountId = process.env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+
+  // Diagnostic: confirms what value (if any) this server process actually
+  // resolved for WHATSAPP_BUSINESS_ACCOUNT_ID at request time. JSON.stringify
+  // (not a plain template literal) so a missing var shows as `undefined`
+  // rather than an empty string, and so stray leading/trailing whitespace in
+  // the env file would be visible as quoted spaces instead of being invisible.
+  console.log("[createMetaTemplate] WHATSAPP_BUSINESS_ACCOUNT_ID =", JSON.stringify(businessAccountId));
+
+  if (!businessAccountId) {
+    return {
+      metaTemplateId: null,
+      metaName,
+      status: "pending",
+      error:
+        "WHATSAPP_BUSINESS_ACCOUNT_ID is not set in this server's environment — template creation " +
+        "cannot proceed. Check .env.local (local dev) or the deployment platform's environment " +
+        "variable settings (e.g. Vercel project settings), and make sure the server process was " +
+        "actually restarted after the change.",
+    };
+  }
+
+  const url = `https://graph.facebook.com/${GRAPH_API_VERSION}/${businessAccountId}/message_templates`;
 
   const res = await fetch(url, {
     method: "POST",
