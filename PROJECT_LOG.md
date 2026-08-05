@@ -35,6 +35,9 @@ the Claude fallback for genuinely open-ended messages (identity questions, out-o
 small talk) gives real, helpful, bilingual answers instead of a repeated scripted refusal. That
 fallback prompt now also carries the live branch/location structure (queried fresh each time, not
 hardcoded), so it can accurately answer "how many branches do you have" / "how many in Al Ain".
+The branch-change trigger now recognizes free-form change requests ("I want to change the
+location") without misfiring on plain status queries ("what's my current location"), and
+re-selecting a branch via this flow sends a "location changed to X" confirmation first.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -44,6 +47,44 @@ hardcoded), so it can accurately answer "how many branches do you have" / "how m
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-05 — Fix branch-change trigger over/under-matching + re-selection confirmation
+- What changed:
+  - isBranchChangeTrigger() was exact-match only (the full trimmed message had to equal a phrase
+    like "change branch" verbatim), so free-form phrasings like "I want to change the location" or
+    "changing location" fell through to resolveActiveStateIntent(), which matched "location" as a
+    keyword and incorrectly sent the map link instead of resetting to location selection. Added a
+    second, broader check: the message matches if it contains a change-intent verb word ("change",
+    "changing", "switch", "want to change", "need to change", "غير", "غيّر", "تغيير", "أريد تغيير",
+    "أحتاج تغيير") together with a location/branch noun word ("location", "branch", "موقع",
+    "فرع") anywhere in the message — requiring both, so plain status queries like "what's my
+    current location" (noun, no change-verb) still correctly fall through unaffected. "changing" is
+    listed as its own entry rather than relying on "change" as a substring, since "change" is not
+    literally contained in "changing" (the final "e" is dropped before "-ing" is added) — a plain
+    substring check would otherwise silently miss the gerund form. The original exact-match set is
+    kept as-is (still needed for "main menu"/"القائمة الرئيسية", which have no location/branch noun
+    in them) and checked first.
+  - Ordering: isBranchChangeTrigger() already ran before all state routing — including before
+    handleActiveConversation()/resolveActiveStateIntent() — so no ordering change was needed;
+    broadening the match itself was the fix.
+  - confirmBranch() now reads the customer's existing branch_id before overwriting it. If it was
+    already set (i.e. this selection came from a branch-change reset, not the customer's
+    first-ever selection), a new sendBranchChangedConfirmation() sends "تم تغيير موقعك إلى
+    [branch]." / "Your location has been changed to [branch]." before the usual post-branch
+    4-option menu. A genuinely first-time selection (branch_id was null) skips this, unchanged
+    from before.
+- Why: Customers asking to change their branch in their own words (not the exact phrase "change
+  branch") were being misrouted to the map-link intent instead of actually restarting selection —
+  and once a customer does go through that reset, they had no explicit confirmation that their
+  branch was actually updated.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. Unit-tested isBranchChangeTrigger() in isolation against every example from both lists in
+  the request: all 6 "must match" phrasings (3 English, 2 Arabic, plus "changing location"/"need
+  location changing" specifically) returned true, all 6 "must NOT match" status-query phrasings (3
+  English, 2 Arabic) returned false, and the pre-existing exact-match phrases ("change branch",
+  "main menu", "القائمة الرئيسية") still returned true — 18 cases total (including 3 extra
+  regression checks against unrelated messages and other intents), all passed.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-05 — Live branch/location structure in the Claude fallback prompt
 - What changed: Added buildLocationBranchSummary(supabase) — queries locations and branches

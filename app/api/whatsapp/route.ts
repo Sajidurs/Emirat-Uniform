@@ -25,7 +25,9 @@ const SELECT_BUTTON = "اختيار / Select";
 
 // Exact-match (case-insensitive, trimmed) phrases that restart branch selection
 // regardless of the customer's current state — including after the
-// post-branch-action flow completes (state = 'active').
+// post-branch-action flow completes (state = 'active'). Covers phrasings that
+// don't fit the verb+noun pattern below (e.g. "main menu" has no "location"/
+// "branch" noun in it).
 const BRANCH_CHANGE_TRIGGERS = new Set([
   "change branch",
   "change location",
@@ -37,8 +39,37 @@ const BRANCH_CHANGE_TRIGGERS = new Set([
   "القائمة الرئيسية",
 ]);
 
+// Broader detection: a change-intent verb together with a location/branch
+// noun, anywhere in the message — catches phrasings the exact-match set above
+// doesn't, like "I want to change the location" or "need location changing".
+// Deliberately requires BOTH a verb and a noun so plain status queries like
+// "what's my current location" (noun, no change-verb) don't false-trigger.
+// "changing" is listed separately from "change": "change" is not literally a
+// substring of "changing" (the final "e" is dropped before "-ing").
+const BRANCH_CHANGE_VERB_WORDS = [
+  "change",
+  "changing",
+  "switch",
+  "want to change",
+  "need to change",
+  "غير",
+  "غيّر",
+  "تغيير",
+  "أريد تغيير",
+  "أحتاج تغيير",
+];
+
+const BRANCH_CHANGE_NOUN_WORDS = ["location", "branch", "موقع", "فرع"];
+
 function isBranchChangeTrigger(text: string): boolean {
-  return BRANCH_CHANGE_TRIGGERS.has(text.trim().toLowerCase());
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+
+  if (BRANCH_CHANGE_TRIGGERS.has(normalized)) return true;
+
+  const hasChangeVerb = BRANCH_CHANGE_VERB_WORDS.some((verb) => normalized.includes(verb.toLowerCase()));
+  const hasLocationNoun = BRANCH_CHANGE_NOUN_WORDS.some((noun) => normalized.includes(noun.toLowerCase()));
+  return hasChangeVerb && hasLocationNoun;
 }
 
 // ---------- Post-branch-selection action menu ----------
@@ -484,15 +515,36 @@ async function handleBranchSelected(supabase: SupabaseClient, phoneNumber: strin
 /**
  * Branch confirmed: instead of auto-sending the review link, show the
  * post-branch-selection action menu (review / map / customer service / back
- * to main list) and move the customer to 'awaiting_post_branch_action'.
+ * to main list) and move the customer to 'awaiting_post_branch_action'. If
+ * the customer already had a branch_id set (i.e. this selection came from a
+ * branch-change reset, not their first-ever selection), send a "location
+ * changed" confirmation first.
  */
 async function confirmBranch(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
+  const { data: existingCustomer } = await supabase
+    .from("customers")
+    .select("branch_id")
+    .eq("phone_number", phoneNumber)
+    .maybeSingle();
+
+  const isBranchChange = existingCustomer?.branch_id != null;
+
   await supabase
     .from("customers")
     .update({ branch_id: branch.id, state: "awaiting_post_branch_action" })
     .eq("phone_number", phoneNumber);
 
+  if (isBranchChange) {
+    await sendBranchChangedConfirmation(supabase, phoneNumber, branch.name);
+  }
+
   await sendPostBranchActionList(supabase, phoneNumber, branch.name);
+}
+
+async function sendBranchChangedConfirmation(supabase: SupabaseClient, phoneNumber: string, branchName: string) {
+  const text = `تم تغيير موقعك إلى ${branchName}.\n` + `Your location has been changed to ${branchName}.`;
+  const waMessageId = await sendWhatsAppText(phoneNumber, text);
+  await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
 }
 
 async function sendPostBranchActionList(
