@@ -123,7 +123,17 @@ type ActiveIntent = "review" | "map" | "service";
 const ACTIVE_INTENT_KEYWORDS: Record<ActiveIntent, string[]> = {
   review: ["review", "rate", "feedback", "تقييم", "مراجعة"],
   map: ["location", "map", "address", "directions", "موقع", "خريطة", "عنوان"],
-  service: ["customer service", "talk to someone", "support", "خدمة العملاء", "الدعم"],
+  service: [
+    "customer service",
+    "talk to someone",
+    "support",
+    "help",
+    "need help",
+    "خدمة العملاء",
+    "الدعم",
+    "مساعدة",
+    "أحتاج مساعدة",
+  ],
 };
 
 function resolveActiveStateIntent(inboundBody: string): ActiveIntent | null {
@@ -620,27 +630,38 @@ async function sendGenericError(supabase: SupabaseClient, phoneNumber: string) {
 }
 
 const ACTIVE_STATE_SYSTEM_PROMPT =
-  "You are the WhatsApp assistant for Emirat Uniform, a uniform company in the UAE. Your only job " +
-  "is helping the customer select their branch and then submit a review, get the branch location, " +
-  "or reach customer service — you do not answer product questions, general questions, or anything " +
-  "else, even if asked directly. The customer has already completed branch selection and used the " +
-  "post-visit options menu. For any message they send now, reply politely explaining that this " +
-  "assistant only helps with branch selection and the review/location/customer-service options, " +
-  "and remind them they can type \"change branch\" / \"تغيير الفرع\" to switch branches, or " +
-  "\"main menu\" / \"القائمة الرئيسية\" to see their options again. Always reply in BOTH Arabic " +
-  "and English together, Arabic first then English — " +
-  "every reply must show both languages, regardless of which language the customer wrote in. Keep " +
-  "it short, polite, and professional.";
+  "You are the WhatsApp assistant for Emirat Uniform, a uniform supplier with 13 branches across " +
+  "the UAE (Abu Dhabi, Al Ain, Dubai, Sharjah, Ajman, Ras Al Khaimah, Fujairah). Your job is " +
+  "helping customers select their branch and then get that branch's Google review link, map " +
+  "location, or customer service contact. The customer you're replying to has already completed " +
+  "branch selection and used the post-visit options menu, so treat this as a follow-up message, " +
+  "not a first contact.\n\n" +
+  "How to reply:\n" +
+  "- Identity questions (\"who are you\", \"what is this\"): answer naturally, e.g. \"I'm the " +
+  "WhatsApp assistant for Emirat Uniform\" — don't refuse to answer.\n" +
+  "- Clearly out-of-scope questions (products, prices, sizes, stock, etc.): say politely that you " +
+  "don't have that information, but customer service can help, and give the number directly in " +
+  "the same reply: " + CUSTOMER_SERVICE_NUMBER + ".\n" +
+  "- Wanting to switch branches or see their options again: remind them they can type \"change " +
+  "branch\" / \"تغيير الفرع\", or \"main menu\" / \"القائمة الرئيسية\".\n" +
+  "- Greetings, small talk, or anything else: reply like a knowledgeable assistant who happens to " +
+  "have a narrow job — warm and natural, not a repeated scripted refusal.\n\n" +
+  "Always reply in BOTH Arabic and English together, Arabic first then English — every reply " +
+  "must show both languages, regardless of which language the customer wrote in. Keep responses " +
+  "short.";
 
-// Used only if the Claude API call itself fails — mirrors the shape Claude is
-// instructed to produce, so a fallback message still meets the "always
-// bilingual" requirement even when the model can't be reached.
+// Used only if the Claude API call itself fails — a fixed string (no model to
+// reason with), so it can't tailor itself to identity questions vs. spam vs.
+// chit-chat the way the system prompt above does. Mirrors the shape Claude is
+// instructed to produce closely enough to still meet the "always bilingual"
+// requirement, just warmer than a flat refusal.
 const ACTIVE_STATE_FALLBACK_REPLY =
-  "عذرًا، هذا المساعد مخصص فقط لاختيار الفرع وخيارات التقييم والموقع وخدمة العملاء. يمكنك كتابة " +
-  "'تغيير الفرع' لتغيير فرعك، أو 'القائمة الرئيسية' لرؤية خياراتك مرة أخرى.\n\n" +
-  "Sorry, this assistant is only for branch selection and the review/location/customer-service " +
-  "options. You can type 'change branch' to switch branches, or 'main menu' to see your options " +
-  "again.";
+  "أهلاً بك! أنا مساعد يونيفورم الإمارات، ويسعدني مساعدتك في اختيار الفرع، أو التقييم، أو الموقع، " +
+  "أو التواصل مع خدمة العملاء. اكتب 'تغيير الفرع' لتغيير فرعك، أو 'القائمة الرئيسية' لرؤية " +
+  "خياراتك مرة أخرى.\n\n" +
+  "Hi there! I'm the Emirat Uniform assistant, happy to help with branch selection, reviews, " +
+  "location, or customer service. Type 'change branch' to switch branches, or 'main menu' to see " +
+  "your options again.";
 
 // Appended after fulfilling a plain-language review/map/customer-service
 // request, reminding the customer they can still switch branches or reopen

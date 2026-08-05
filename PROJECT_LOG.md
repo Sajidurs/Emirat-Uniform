@@ -30,7 +30,9 @@ general 'active'-state Claude fallback (prompt + failure-fallback reply) all men
 The dashboard now has the real Emirat Uniform logo (sidebar + login page), and the login page's
 invisible-input-text bug is fixed. 'active' customers can also now ask for the review link, map
 link, or customer service in plain language (any time, even in a brand new session), not just via
-the post-branch-selection button menu.
+the post-branch-selection button menu — "help"/"مساعدة" now also routes to customer service, and
+the Claude fallback for genuinely open-ended messages (identity questions, out-of-scope questions,
+small talk) gives real, helpful, bilingual answers instead of a repeated scripted refusal.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -40,6 +42,43 @@ the post-branch-selection button menu.
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-05 — "help" as a service intent + a Claude fallback that can actually converse
+- What changed:
+  - Added "help", "need help", "مساعدة", "أحتاج مساعدة" to ACTIVE_INTENT_KEYWORDS' `service`
+    bucket in resolveActiveStateIntent(), alongside the existing "customer service"/"talk to
+    someone"/"support"/"خدمة العملاء"/"الدعم" — these now route straight to
+    sendCustomerServiceInfo() instead of falling through to Claude.
+  - Rewrote ACTIVE_STATE_SYSTEM_PROMPT with real company context (Emirat Uniform, uniform
+    supplier, 13 branches across the 7 named UAE locations) and explicit per-situation guidance
+    instead of one blanket "only helps with X, refuse everything else" instruction: identity
+    questions ("who are you") get answered naturally; clearly out-of-scope questions (products,
+    prices, sizes, stock) get a polite "don't have that info" plus the customer service number
+    given directly in the same reply (not just "type customer service"); wanting to switch
+    branches still points at "change branch"/"main menu"; greetings/small talk/anything else get
+    a warm, natural reply instead of a repeated scripted refusal. Still always bilingual (Arabic
+    first, English second) and kept short.
+  - Reworded ACTIVE_STATE_FALLBACK_REPLY (used only if the Claude API call itself fails) to be
+    warmer — still a single fixed bilingual string since there's no model to reason with there,
+    but it now opens like a helpful assistant introducing itself rather than a flat refusal.
+- Why: Customers naturally say "help" when they want customer service, and repeatedly hitting a
+  scripted "Sorry, I can only help with X" refusal for ordinary messages like "who are you" or
+  "hi" reads as broken rather than narrow-but-polite. The goal was a bot that feels like a
+  knowledgeable assistant with a narrow job, not one that can only recite one sentence.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. Unit-tested resolveActiveStateIntent() in isolation for the new "help" keywords plus a
+  regression check on the existing review/map intents — all passed. The system prompt itself is
+  non-deterministic prompt text with nothing to unit-test, so — since this doesn't touch WhatsApp
+  or customer data, unlike a live webhook payload — made real Claude API calls (same model,
+  max_tokens, thinking:disabled as production) with 6 representative messages ("who are you",
+  "what is this", "hi", "do you have size L in stock", "how much does a uniform cost", random
+  spam text) and inspected the actual replies: identity questions got natural bilingual answers
+  (no refusal), both out-of-scope product/price questions got a polite "don't have that info"
+  reply with the customer service number included directly in the text, the greeting got a warm
+  offer to help, and the spam message got a polite clarification request pointing at "change
+  branch"/"main menu" rather than a scripted refusal — every reply was bilingual (Arabic +
+  English both present).
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-05 — Plain-language intent recognition for 'active' customers
 - What changed: Added resolveActiveStateIntent() — checked at the top of handleActiveConversation()
