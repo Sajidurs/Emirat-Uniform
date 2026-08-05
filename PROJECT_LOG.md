@@ -27,6 +27,8 @@ customer service / back to main list) via a new 'awaiting_post_branch_action' cu
 A "main menu" / "القائمة الرئيسية" trigger phrase now also restarts branch selection from any
 state (alongside "change branch" / "تغيير الفرع"), and the post-visit closing message and the
 general 'active'-state Claude fallback (prompt + failure-fallback reply) all mention both.
+The dashboard now has the real Emirat Uniform logo (sidebar + login page), and the login page's
+invisible-input-text bug is fixed.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -36,6 +38,41 @@ general 'active'-state Claude fallback (prompt + failure-fallback reply) all men
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-05 — Login input contrast fix + dashboard logo
+- What changed:
+  - Fixed invisible text in the /login email and password inputs: neither `<input>` had an
+    explicit text color, so both inherited `color: var(--foreground)` from `body` in
+    globals.css — `#ededed` (near-white) whenever the browser/OS is in dark mode — rendered
+    against the input's default white background, making typed text unreadable. Added explicit
+    `bg-white text-gray-900 placeholder:text-gray-400` to both inputs, matching this page's
+    existing (gray-based) local color scheme.
+  - Added the real Emirat Uniform logo, provided as a WhatsApp-shared image. The chat message
+    embedded the image inline but left its actual file path as an unfilled placeholder; located
+    the real files on disk via their recent modification time (Downloads\WhatsApp_Image_...
+    -removebg-preview.png and the "(1)" variant — both already background-removed with alpha
+    transparency, confirmed via direct PNG header inspection) and visually matched them against
+    the image shown in chat before using them. Copied the compact icon-only mark (160x171,
+    no wordmark) to public/logo-mark.png for the sidebar, and the full mark-plus-wordmark version
+    (589x424, "EMIRATES UNIFORM / Uniform&Scrubs") to public/logo-full.png for the login page.
+    Used next/image (not a raw `<img>`, consistent with this project's eslint-config-next
+    core-web-vitals rule) in both components/dashboard/Sidebar.tsx (replaces the old indigo "E"
+    monogram square, kept the "Emirat Uniform" text label alongside it, `alt=""` since the
+    adjacent text already conveys the same information) and app/login/page.tsx (added above the
+    existing "Emirat Uniform" heading, `h-20` centered, `priority` since it's likely the largest
+    above-the-fold element on that page).
+- Why: user-reported bug (unreadable login text) plus a branding ask (real logo instead of a
+  placeholder monogram) to be applied without touching any other styling or functionality.
+- How it was verified: `tsc --noEmit`, `eslint`, and `next build` all clean. Given this is a
+  visual bug fix + a visual asset addition — exactly the kind of change static analysis can't
+  confirm — verified live in a real browser (temporary Supabase Auth user + Playwright, same
+  transient-install approach as prior UI verifications, cleaned up afterward): typed real text
+  into both login fields and confirmed via `getComputedStyle` that the rendered color is a very
+  dark near-black against a white background (not just eyeballing a screenshot), then logged in
+  and confirmed the sidebar logo renders at a small, proportional size (160x171 natural →
+  30x32 rendered) next to real production conversation data, with zero browser console errors.
+- Files touched: app/login/page.tsx, components/dashboard/Sidebar.tsx, public/logo-mark.png (new),
+  public/logo-full.png (new), PROJECT_LOG.md
 
 ### 2026-08-02 — Mention "main menu" in the general active-state Claude fallback too
 - What changed: ACTIVE_STATE_SYSTEM_PROMPT and ACTIVE_STATE_FALLBACK_REPLY (used for any

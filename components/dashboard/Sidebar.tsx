@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ConversationsIcon, LeadsIcon, CampaignsIcon } from "./icons";
@@ -24,9 +25,7 @@ export default function Sidebar({ userEmail }: { userEmail: string }) {
   return (
     <aside className="flex h-screen w-60 flex-col border-r border-slate-200 bg-white px-3 py-5">
       <div className="mb-6 flex items-center gap-2 px-2">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-sm font-semibold text-white">
-          E
-        </div>
+        <Image src="/logo-mark.png" alt="" width={160} height={171} className="h-8 w-auto" />
         <div className="text-sm font-semibold text-slate-900">Emirat Uniform</div>
       </div>
 
