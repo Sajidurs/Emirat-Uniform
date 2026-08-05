@@ -629,26 +629,79 @@ async function sendGenericError(supabase: SupabaseClient, phoneNumber: string) {
   await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
 }
 
-const ACTIVE_STATE_SYSTEM_PROMPT =
-  "You are the WhatsApp assistant for Emirat Uniform, a uniform supplier with 13 branches across " +
-  "the UAE (Abu Dhabi, Al Ain, Dubai, Sharjah, Ajman, Ras Al Khaimah, Fujairah). Your job is " +
-  "helping customers select their branch and then get that branch's Google review link, map " +
-  "location, or customer service contact. The customer you're replying to has already completed " +
-  "branch selection and used the post-visit options menu, so treat this as a follow-up message, " +
-  "not a first contact.\n\n" +
-  "How to reply:\n" +
-  "- Identity questions (\"who are you\", \"what is this\"): answer naturally, e.g. \"I'm the " +
-  "WhatsApp assistant for Emirat Uniform\" — don't refuse to answer.\n" +
-  "- Clearly out-of-scope questions (products, prices, sizes, stock, etc.): say politely that you " +
-  "don't have that information, but customer service can help, and give the number directly in " +
-  "the same reply: " + CUSTOMER_SERVICE_NUMBER + ".\n" +
-  "- Wanting to switch branches or see their options again: remind them they can type \"change " +
-  "branch\" / \"تغيير الفرع\", or \"main menu\" / \"القائمة الرئيسية\".\n" +
-  "- Greetings, small talk, or anything else: reply like a knowledgeable assistant who happens to " +
-  "have a narrow job — warm and natural, not a repeated scripted refusal.\n\n" +
-  "Always reply in BOTH Arabic and English together, Arabic first then English — every reply " +
-  "must show both languages, regardless of which language the customer wrote in. Keep responses " +
-  "short.";
+// The DB stores this location's name as the abbreviation "RAK" (see
+// LOCATION_LABELS_AR); Claude gets the friendlier full name instead.
+const LOCATION_DISPLAY_NAME_EN: Record<string, string> = {
+  RAK: "Ras Al Khaimah",
+};
+
+/**
+ * Builds the "Emirat Uniform has N locations... " branch/location structure
+ * block for the Claude fallback prompt, queried live so it can't go stale if
+ * branches are added/removed later — this data changes rarely, but the
+ * supabase client is already threaded through this whole call chain, so
+ * querying it fresh per fallback call costs one lightweight round trip
+ * against a cheap, unfiltered `select` rather than risking a hardcoded list
+ * silently drifting from the real branches table.
+ */
+async function buildLocationBranchSummary(supabase: SupabaseClient): Promise<string> {
+  const [{ data: locations }, { data: branches }] = await Promise.all([
+    supabase.from("locations").select("id, name").order("id"),
+    supabase.from("branches").select("location_id, name").order("id"),
+  ]);
+
+  if (!locations || locations.length === 0) return "";
+
+  const branchNamesByLocation = new Map<number, string[]>();
+  for (const b of branches ?? []) {
+    const names = branchNamesByLocation.get(b.location_id) ?? [];
+    names.push(b.name);
+    branchNamesByLocation.set(b.location_id, names);
+  }
+
+  const totalBranches = branches?.length ?? 0;
+  const lines = locations.map((loc: { id: number; name: string }) => {
+    const names = branchNamesByLocation.get(loc.id) ?? [];
+    const displayName = LOCATION_DISPLAY_NAME_EN[loc.name] ?? loc.name;
+    const branchWord = names.length === 1 ? "branch" : "branches";
+    return `- ${displayName}: ${names.length} ${branchWord} (${names.join(", ")})`;
+  });
+
+  return (
+    `Emirat Uniform has ${locations.length} locations across the UAE, with ${totalBranches} ` +
+    `branches total:\n\n${lines.join("\n")}`
+  );
+}
+
+function buildActiveStateSystemPrompt(locationBranchSummary: string): string {
+  return (
+    "You are the WhatsApp assistant for Emirat Uniform, a uniform supplier with branches across " +
+    "the UAE. Your job is helping customers select their branch and then get that branch's " +
+    "Google review link, map location, or customer service contact. The customer you're replying " +
+    "to has already completed branch selection and used the post-visit options menu, so treat " +
+    "this as a follow-up message, not a first contact.\n\n" +
+    "Company branch/location structure (use this to accurately answer questions like \"how many " +
+    "branches do you have\" or \"how many branches in Al Ain\" — do NOT invent or guess branch " +
+    "names, addresses, or counts beyond what's listed here):\n" +
+    locationBranchSummary +
+    "\n\n" +
+    "How to reply:\n" +
+    "- Branch/location count or listing questions: answer directly and accurately from the " +
+    "structure above; if asked about a specific location, list its branches by name.\n" +
+    "- Identity questions (\"who are you\", \"what is this\"): answer naturally, e.g. \"I'm the " +
+    "WhatsApp assistant for Emirat Uniform\" — don't refuse to answer.\n" +
+    "- Clearly out-of-scope questions (products, prices, sizes, stock, etc.): say politely that " +
+    "you don't have that information, but customer service can help, and give the number " +
+    "directly in the same reply: " + CUSTOMER_SERVICE_NUMBER + ".\n" +
+    "- Wanting to switch branches or see their options again: remind them they can type \"change " +
+    "branch\" / \"تغيير الفرع\", or \"main menu\" / \"القائمة الرئيسية\".\n" +
+    "- Greetings, small talk, or anything else: reply like a knowledgeable assistant who happens " +
+    "to have a narrow job — warm and natural, not a repeated scripted refusal.\n\n" +
+    "Always reply in BOTH Arabic and English together, Arabic first then English — every reply " +
+    "must show both languages, regardless of which language the customer wrote in. Keep " +
+    "responses short."
+  );
+}
 
 // Used only if the Claude API call itself fails — a fixed string (no model to
 // reason with), so it can't tailor itself to identity questions vs. spam vs.
@@ -739,11 +792,12 @@ async function handleActiveConversation(
   let replyText = ACTIVE_STATE_FALLBACK_REPLY;
 
   try {
+    const locationBranchSummary = await buildLocationBranchSummary(supabase);
     const response = await anthropic.messages.create({
       model: "claude-sonnet-5",
       max_tokens: 250,
       thinking: { type: "disabled" },
-      system: ACTIVE_STATE_SYSTEM_PROMPT,
+      system: buildActiveStateSystemPrompt(locationBranchSummary),
       messages: [{ role: "user", content: inboundBody || "(no text)" }],
     });
 

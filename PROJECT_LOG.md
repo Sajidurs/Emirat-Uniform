@@ -32,7 +32,9 @@ invisible-input-text bug is fixed. 'active' customers can also now ask for the r
 link, or customer service in plain language (any time, even in a brand new session), not just via
 the post-branch-selection button menu — "help"/"مساعدة" now also routes to customer service, and
 the Claude fallback for genuinely open-ended messages (identity questions, out-of-scope questions,
-small talk) gives real, helpful, bilingual answers instead of a repeated scripted refusal.
+small talk) gives real, helpful, bilingual answers instead of a repeated scripted refusal. That
+fallback prompt now also carries the live branch/location structure (queried fresh each time, not
+hardcoded), so it can accurately answer "how many branches do you have" / "how many in Al Ain".
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -42,6 +44,40 @@ small talk) gives real, helpful, bilingual answers instead of a repeated scripte
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-05 — Live branch/location structure in the Claude fallback prompt
+- What changed: Added buildLocationBranchSummary(supabase) — queries locations and branches
+  (two lightweight unfiltered `select`s, run in parallel) and formats them into the exact
+  "Emirat Uniform has N locations... - Location: N branches (Name1, Name2, ...)" structure block.
+  Queried live rather than hardcoded: this data changes rarely, but the supabase client is already
+  threaded through this entire call chain, so refreshing it per fallback call costs one cheap
+  round trip and can never silently drift from the real branches table the way a hardcoded copy
+  could if a branch is added or removed later. Converted ACTIVE_STATE_SYSTEM_PROMPT from a static
+  constant to buildActiveStateSystemPrompt(locationBranchSummary) — a function that splices the
+  live summary into the prompt — and handleActiveConversation() now calls
+  buildLocationBranchSummary() inside its existing try/catch (a DB failure there falls back to
+  ACTIVE_STATE_FALLBACK_REPLY exactly like a Claude API failure already did). Removed the old
+  hardcoded "13 branches across the UAE (Abu Dhabi, Al Ain, ...)" from the prompt's opening
+  sentence, since the live structure block now supersedes it as the single source of truth — kept
+  both in sync would otherwise mean two places to update. The DB stores the Ras Al Khaimah
+  location's name as the abbreviation "RAK" (see LOCATION_LABELS_AR); added a small
+  LOCATION_DISPLAY_NAME_EN lookup so Claude sees the friendly full name instead. Added explicit
+  prompt instructions: answer branch count/listing questions directly and accurately from the
+  structure block, list a specific location's branches by name when asked, and never invent or
+  guess names/addresses/counts beyond what's listed.
+- Why: Customers asking "how many branches do you have" or "how many branches in Al Ain" need an
+  accurate answer sourced from real data, not a plausible-sounding guess — and querying live means
+  this stays correct automatically if branches are ever added or removed, with no second place in
+  the codebase to remember to update.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. Ran buildLocationBranchSummary() against the real live Supabase project (not a mock) and
+  confirmed the generated text matches this task's example structure exactly, character for
+  character (7 locations, 13 branches, correct names and order, "Ras Al Khaimah" not "RAK"). Then
+  made real Claude API calls with the generated summary spliced into the actual prompt-building
+  function and asked "how many branches do you have", "how many branches in Al Ain", "what
+  locations are you in", and "do you have a branch in Fujairah" — every answer was accurate
+  (correct counts and branch names pulled from the injected structure, not invented) and bilingual.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-05 — "help" as a service intent + a Claude fallback that can actually converse
 - What changed:
