@@ -110,6 +110,34 @@ function resolvePostBranchAction(listReplyId: string | null, inboundBody: string
   return textMatch?.action ?? null;
 }
 
+// ---------- Plain-language intent recognition for 'active' customers ----------
+// Once a customer is fully 'active' (branch already selected, post-branch menu
+// already completed), they may later type a plain-language request instead of
+// tapping a menu option — in a brand new session, days later. Substring
+// keyword matching (not exact-match like BRANCH_CHANGE_TRIGGERS) since these
+// are meant to be recognized inside free-form sentences, e.g. "send me the
+// location". "mainlist" isn't part of this: "change branch" / "main menu" are
+// already handled by isBranchChangeTrigger() before state routing even runs.
+type ActiveIntent = "review" | "map" | "service";
+
+const ACTIVE_INTENT_KEYWORDS: Record<ActiveIntent, string[]> = {
+  review: ["review", "rate", "feedback", "تقييم", "مراجعة"],
+  map: ["location", "map", "address", "directions", "موقع", "خريطة", "عنوان"],
+  service: ["customer service", "talk to someone", "support", "خدمة العملاء", "الدعم"],
+};
+
+function resolveActiveStateIntent(inboundBody: string): ActiveIntent | null {
+  const normalized = inboundBody.trim().toLowerCase();
+  if (!normalized) return null;
+
+  for (const [intent, keywords] of Object.entries(ACTIVE_INTENT_KEYWORDS) as [ActiveIntent, string[]][]) {
+    if (keywords.some((keyword) => normalized.includes(keyword.toLowerCase()))) {
+      return intent;
+    }
+  }
+  return null;
+}
+
 interface Customer {
   phone_number: string;
   name: string | null;
@@ -276,8 +304,9 @@ async function handleInboundMessage(
     return;
   }
 
-  // state === "active" (or anything else): hand off to Claude for a brief reply
-  await handleActiveConversation(supabase, phoneNumber, inboundBody);
+  // state === "active" (or anything else): check for a plain-language
+  // review/map/customer-service request before handing off to Claude.
+  await handleActiveConversation(supabase, phoneNumber, customer.branch_id, inboundBody);
 }
 
 /** Sends the location list and moves the customer to 'awaiting_location'. */
@@ -613,7 +642,79 @@ const ACTIVE_STATE_FALLBACK_REPLY =
   "options. You can type 'change branch' to switch branches, or 'main menu' to see your options " +
   "again.";
 
-async function handleActiveConversation(supabase: SupabaseClient, phoneNumber: string, inboundBody: string) {
+// Appended after fulfilling a plain-language review/map/customer-service
+// request, reminding the customer they can still switch branches or reopen
+// the menu — same commands as everywhere else, just shorter than
+// POST_ACTION_CLOSING_MESSAGE (which follows the full post-branch menu, not a
+// one-off free-form request).
+const ACTIVE_INTENT_CHANGE_BRANCH_HINT =
+  "لتغيير الفرع، اكتب 'تغيير الفرع' أو 'القائمة الرئيسية'.\n" +
+  "To change your branch, type 'change branch' or 'main menu'.";
+
+async function sendActiveIntentClosing(supabase: SupabaseClient, phoneNumber: string) {
+  const waMessageId = await sendWhatsAppText(phoneNumber, ACTIVE_INTENT_CHANGE_BRANCH_HINT);
+  await logMessage(supabase, phoneNumber, "outbound", ACTIVE_INTENT_CHANGE_BRANCH_HINT, waMessageId);
+}
+
+/**
+ * Fulfills a plain-language review/map/customer-service request from an
+ * 'active' customer — reusing the exact same send helpers as the
+ * post-branch-action menu (options 1-3), just reached via keyword matching
+ * instead of a list_reply tap.
+ */
+async function handleActiveStateIntent(
+  supabase: SupabaseClient,
+  phoneNumber: string,
+  branchId: number | null,
+  intent: ActiveIntent
+) {
+  if (intent === "service") {
+    await sendCustomerServiceInfo(supabase, phoneNumber);
+    await sendActiveIntentClosing(supabase, phoneNumber);
+    return;
+  }
+
+  if (!branchId) {
+    console.warn("Active customer has no branch_id set; cannot resolve review/map intent");
+    await sendGenericError(supabase, phoneNumber);
+    return;
+  }
+
+  const { data: branch } = await supabase
+    .from("branches")
+    .select("id, name, gmb_review_link, gmb_map_link")
+    .eq("id", branchId)
+    .maybeSingle();
+
+  if (!branch) {
+    console.warn(`Branch not found for id=${branchId}`);
+    await sendGenericError(supabase, phoneNumber);
+    return;
+  }
+
+  const typedBranch = branch as Branch;
+
+  if (intent === "review") {
+    await sendReviewLink(supabase, phoneNumber, typedBranch);
+  } else {
+    await sendMapLink(supabase, phoneNumber, typedBranch);
+  }
+
+  await sendActiveIntentClosing(supabase, phoneNumber);
+}
+
+async function handleActiveConversation(
+  supabase: SupabaseClient,
+  phoneNumber: string,
+  branchId: number | null,
+  inboundBody: string
+) {
+  const intent = resolveActiveStateIntent(inboundBody);
+  if (intent) {
+    await handleActiveStateIntent(supabase, phoneNumber, branchId, intent);
+    return;
+  }
+
   let replyText = ACTIVE_STATE_FALLBACK_REPLY;
 
   try {

@@ -28,7 +28,9 @@ A "main menu" / "القائمة الرئيسية" trigger phrase now also restar
 state (alongside "change branch" / "تغيير الفرع"), and the post-visit closing message and the
 general 'active'-state Claude fallback (prompt + failure-fallback reply) all mention both.
 The dashboard now has the real Emirat Uniform logo (sidebar + login page), and the login page's
-invisible-input-text bug is fixed.
+invisible-input-text bug is fixed. 'active' customers can also now ask for the review link, map
+link, or customer service in plain language (any time, even in a brand new session), not just via
+the post-branch-selection button menu.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -38,6 +40,41 @@ invisible-input-text bug is fixed.
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-05 — Plain-language intent recognition for 'active' customers
+- What changed: Added resolveActiveStateIntent() — checked at the top of handleActiveConversation()
+  (the function that runs whenever a customer is 'active' and their message didn't match the
+  branch-change trigger phrases), before falling through to the Claude fallback. Uses substring
+  keyword matching (not exact-match like BRANCH_CHANGE_TRIGGERS or resolvePostBranchAction), since
+  these need to be recognized inside free-form sentences like "send me the location", not just
+  as a whole-message match: review → "review"/"rate"/"feedback"/"تقييم"/"مراجعة"; map →
+  "location"/"map"/"address"/"directions"/"موقع"/"خريطة"/"عنوان"; customer service →
+  "customer service"/"talk to someone"/"support"/"خدمة العملاء"/"الدعم". A match calls a new
+  handleActiveStateIntent(), which reuses the exact same sendReviewLink()/sendMapLink()/
+  sendCustomerServiceInfo() helpers already used by the post-branch-action menu (options 1-3) —
+  just reached via keyword match instead of a list_reply tap — then sends a new, shorter closing
+  hint (ACTIVE_INTENT_CHANGE_BRANCH_HINT: "لتغيير الفرع، اكتب 'تغيير الفرع' أو 'القائمة
+  الرئيسية'." / "To change your branch, type 'change branch' or 'main menu'." — distinct wording
+  from POST_ACTION_CLOSING_MESSAGE, which follows the full menu rather than a one-off request).
+  No match falls through to ACTIVE_STATE_FALLBACK_REPLY / Claude exactly as before. Chose keyword
+  matching over a Claude classification call: this codebase already has two deterministic matchers
+  for actionable intents (BRANCH_CHANGE_TRIGGERS, resolvePostBranchAction) and reserves Claude only
+  for genuinely open-ended replies with no defined action — a classification call would add
+  latency, cost, and a new failure mode for something that should behave deterministically.
+  "Change branch" / "main menu" needed no new code: isBranchChangeTrigger() already runs
+  unconditionally before all state routing, so those triggers already take priority over the new
+  intent check simply by running first in handleInboundMessage().
+- Why: Customers expect to ask in plain language whenever they want their review link, directions,
+  or customer service — not just in the narrow window right after selecting their branch. Before
+  this change, typing "how do I leave a review" a day later (or in a new session) fell through to
+  the generic "this assistant only helps with branch selection..." Claude fallback instead of
+  actually fulfilling the request.
+- How it was verified: `tsc --noEmit`, `eslint app/api/whatsapp/route.ts`, and `next build` all
+  clean. As with the earlier trigger-phrase and duplicate-link fixes, did not fire a live webhook
+  payload (real WhatsApp/Meta side effects) — unit-tested resolveActiveStateIntent() in isolation
+  against all of this task's example phrases in both languages, plus unrelated/empty-message
+  non-matches — all 18 cases passed.
+- Files touched: app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-05 — Login input contrast fix + dashboard logo
 - What changed:
