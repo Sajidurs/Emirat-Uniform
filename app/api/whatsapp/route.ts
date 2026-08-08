@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase-service";
-import { ListRow, sendWhatsAppList, sendWhatsAppText } from "@/lib/whatsapp";
+import { ListRow, markAsReadWithTyping, sendWhatsAppList, sendWhatsAppText } from "@/lib/whatsapp";
 
 export const dynamic = "force-dynamic";
 
@@ -305,6 +305,11 @@ async function handleInboundMessage(
   const waMessageId: string | null = message.id ?? null;
 
   if (waMessageId) {
+    // Fire-and-forget: shows "typing..." to the customer immediately, before
+    // any of the slower steps below (DB lookups, Claude call). Not awaited,
+    // so it can't add latency to the actual reply.
+    void markAsReadWithTyping(waMessageId);
+
     const { data: existing } = await supabase
       .from("messages")
       .select("id")

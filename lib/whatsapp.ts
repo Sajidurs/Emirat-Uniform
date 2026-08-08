@@ -29,6 +29,39 @@ async function sendWhatsAppMessage(payload: Record<string, unknown>): Promise<st
   return data?.messages?.[0]?.id ?? null;
 }
 
+/**
+ * Marks the incoming message as read and shows the "typing..." indicator, so
+ * the customer sees a response in progress while the actual reply is still
+ * being worked out (DB lookups, Claude call, etc.). The typing indicator
+ * clears automatically once the next message is sent to them — no separate
+ * "stop typing" call exists. Fire-and-forget: callers should not await this,
+ * so it can't add latency to the real reply; errors are swallowed here for
+ * the same reason, so the returned promise never rejects.
+ */
+export async function markAsReadWithTyping(waMessageId: string): Promise<void> {
+  try {
+    const res = await fetch(apiUrl(), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: waMessageId,
+        typing_indicator: { type: "text" },
+      }),
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error("WhatsApp mark-as-read/typing error", res.status, errBody);
+    }
+  } catch (err) {
+    console.error("WhatsApp mark-as-read/typing request failed", err);
+  }
+}
+
 export function sendWhatsAppText(to: string, body: string) {
   return sendWhatsAppMessage({
     to,

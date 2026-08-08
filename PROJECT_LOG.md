@@ -42,7 +42,10 @@ Client-reported slow replies were investigated and then fixed: the webhook now A
 immediately (via `after()`) and processes in the background, the two-message sequences in the
 post-branch menu, the plain-language intent replies, and the branch-change confirmation are each
 now a single WhatsApp send, and the Claude fallback now uses `claude-haiku-4-5-20251001` instead of
-`claude-sonnet-5`. See the change history entry below for before/after numbers.
+`claude-sonnet-5`. See the change history entry below for before/after numbers. The webhook now also
+marks the incoming message as read and shows the WhatsApp "typing..." indicator as the very first
+step in background processing, so customers see a response in progress while the reply is worked
+out — fire-and-forget, so it can't add latency of its own.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -52,6 +55,32 @@ now a single WhatsApp send, and the Claude fallback now uses `claude-haiku-4-5-2
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-08 — Add WhatsApp typing indicator for perceived responsiveness
+- What changed: Added `markAsReadWithTyping(waMessageId)` to lib/whatsapp.ts — a small helper that
+  POSTs `{ messaging_product: "whatsapp", status: "read", message_id, typing_indicator: { type:
+  "text" } }` to the same Graph API messages endpoint used for sends. Called from
+  `handleInboundMessage()` in app/api/whatsapp/route.ts immediately after extracting `waMessageId`,
+  before the dedup check or any other processing — so it's one of the very first things that runs
+  inside the `after()` background block, ahead of the Claude call or any DB work. No separate
+  "stop typing" call is needed; WhatsApp clears the indicator automatically once the actual reply is
+  sent.
+- Fire-and-forget by design: the call site does `void markAsReadWithTyping(waMessageId)` (not
+  awaited), and the helper itself catches and logs its own errors rather than throwing, so an
+  unawaited call can never produce an unhandled rejection and can never delay the real reply.
+- Verified locally against a real dev server (same seeded-customer-plus-real-webhook-POST
+  methodology as the prior performance-fix entry): total end-to-end timing for both the
+  keyword-matched intent path (~1471ms) and the Claude fallback path (~3062ms) stayed within the
+  same range measured before this change, confirming the new call adds no noticeable latency. The
+  dev server log also confirmed the call fires first, before the `[claude]`/`[whatsapp]` logs for
+  the actual reply — using a fabricated test message id (since a synthetic test can't reference a
+  real inbound WhatsApp message), Meta's API correctly rejected it (`#131009 Parameter value is not
+  valid`), which is expected and itself confirms the request reaches Meta's real API with the
+  right shape; it does not confirm success behavior against a genuine message id, since that can
+  only happen with real inbound production traffic.
+- Why: Improve perceived responsiveness — customers now see "typing..." right away instead of
+  silence for the ~1-3s (or longer, for slower Claude replies) it takes to actually respond.
+- Files touched: lib/whatsapp.ts, app/api/whatsapp/route.ts, PROJECT_LOG.md
 
 ### 2026-08-08 — Fix slow reply delivery (ack-immediately, merge sends, switch to Haiku)
 - What changed, based directly on the prior investigation entry's findings:
