@@ -5,6 +5,10 @@ function apiUrl() {
 }
 
 async function sendWhatsAppMessage(payload: Record<string, unknown>): Promise<string | null> {
+  const to = typeof payload.to === "string" ? payload.to : "unknown";
+  const type = typeof payload.type === "string" ? payload.type : "unknown";
+  const sendStart = Date.now();
+
   const res = await fetch(apiUrl(), {
     method: "POST",
     headers: {
@@ -15,11 +19,13 @@ async function sendWhatsAppMessage(payload: Record<string, unknown>): Promise<st
   });
 
   if (!res.ok) {
-    console.error("WhatsApp API error", res.status, await res.text());
+    const errBody = await res.text();
+    console.error("WhatsApp API error", res.status, errBody);
     return null;
   }
 
   const data = await res.json();
+  console.log(`[whatsapp] send to=${to} type=${type} ${Date.now() - sendStart}ms status=${res.status}`);
   return data?.messages?.[0]?.id ?? null;
 }
 

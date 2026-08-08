@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { createServiceClient } from "@/lib/supabase-service";
@@ -228,35 +228,48 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const supabase = createServiceClient();
 
+  let payload: { entry?: unknown[] };
   try {
-    const payload = await req.json();
-    const entries = payload?.entry ?? [];
+    payload = await req.json();
+  } catch (err) {
+    console.error("Error parsing WhatsApp webhook payload", err);
+    return NextResponse.json({ status: "ok" });
+  }
 
-    for (const entry of entries) {
-      for (const change of entry?.changes ?? []) {
-        const value = change?.value;
+  // Ack Meta immediately, then process in the background — Meta retries the
+  // webhook (and the customer's own client shows delivery delay) if the 200
+  // is held up behind DB writes, the Claude call, and the WhatsApp send.
+  // after() keeps the serverless function alive until this finishes.
+  after(async () => {
+    try {
+      const entries = payload?.entry ?? [];
 
-        const messages: WhatsAppMessage[] | undefined = value?.messages;
-        if (messages) {
-          const contactName: string | null = value?.contacts?.[0]?.profile?.name ?? null;
-          for (const message of messages) {
-            await handleInboundMessage(supabase, message, contactName);
+      for (const entry of entries as Array<{ changes?: unknown[] }>) {
+        for (const change of entry?.changes ?? []) {
+          const value = (change as { value?: Record<string, unknown> })?.value;
+
+          const messages = value?.messages as WhatsAppMessage[] | undefined;
+          if (messages) {
+            const contactName: string | null =
+              (value?.contacts as Array<{ profile?: { name?: string } }> | undefined)?.[0]?.profile?.name ?? null;
+            for (const message of messages) {
+              await handleInboundMessage(supabase, message, contactName);
+            }
           }
-        }
 
-        const statuses: WhatsAppStatus[] | undefined = value?.statuses;
-        if (statuses) {
-          for (const status of statuses) {
-            await handleStatusUpdate(supabase, status);
+          const statuses = value?.statuses as WhatsAppStatus[] | undefined;
+          if (statuses) {
+            for (const status of statuses) {
+              await handleStatusUpdate(supabase, status);
+            }
           }
         }
       }
+    } catch (err) {
+      console.error("Error processing WhatsApp webhook", err);
     }
-  } catch (err) {
-    console.error("Error processing WhatsApp webhook", err);
-  }
+  });
 
-  // Always acknowledge so Meta doesn't retry.
   return NextResponse.json({ status: "ok" });
 }
 
@@ -517,8 +530,9 @@ async function handleBranchSelected(supabase: SupabaseClient, phoneNumber: strin
  * post-branch-selection action menu (review / map / customer service / back
  * to main list) and move the customer to 'awaiting_post_branch_action'. If
  * the customer already had a branch_id set (i.e. this selection came from a
- * branch-change reset, not their first-ever selection), send a "location
- * changed" confirmation first.
+ * branch-change reset, not their first-ever selection), the "location
+ * changed" confirmation is folded into the action list's own body text
+ * instead of being sent as a separate message.
  */
 async function confirmBranch(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
   const { data: existingCustomer } = await supabase
@@ -534,24 +548,15 @@ async function confirmBranch(supabase: SupabaseClient, phoneNumber: string, bran
     .update({ branch_id: branch.id, state: "awaiting_post_branch_action" })
     .eq("phone_number", phoneNumber);
 
-  if (isBranchChange) {
-    await sendBranchChangedConfirmation(supabase, phoneNumber, branch.name);
-  }
-
-  await sendPostBranchActionList(supabase, phoneNumber, branch.name);
-}
-
-async function sendBranchChangedConfirmation(supabase: SupabaseClient, phoneNumber: string, branchName: string) {
-  const text = `تم تغيير موقعك إلى ${branchName}.\n` + `Your location has been changed to ${branchName}.`;
-  const waMessageId = await sendWhatsAppText(phoneNumber, text);
-  await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
+  await sendPostBranchActionList(supabase, phoneNumber, branch.name, false, isBranchChange);
 }
 
 async function sendPostBranchActionList(
   supabase: SupabaseClient,
   phoneNumber: string,
   branchName?: string,
-  isRetry = false
+  isRetry = false,
+  isBranchChange = false
 ) {
   const rows: ListRow[] = POST_BRANCH_ACTION_ROWS.map((r) => ({
     id: r.id,
@@ -559,9 +564,15 @@ async function sendPostBranchActionList(
     description: r.descAr,
   }));
 
+  const changeConfirmation =
+    isBranchChange && branchName
+      ? `تم تغيير موقعك إلى ${branchName}.\n` + `Your location has been changed to ${branchName}.\n\n`
+      : "";
+
   const body =
     !isRetry && branchName
-      ? `شكراً لزيارتكم فرع ${branchName}! من فضلك اختر أحد الخيارات التالية.\n` +
+      ? changeConfirmation +
+        `شكراً لزيارتكم فرع ${branchName}! من فضلك اختر أحد الخيارات التالية.\n` +
         `Thank you for visiting our ${branchName} branch! Please choose one of the following options.`
       : "من فضلك اختر أحد الخيارات من القائمة أدناه.\nPlease select one of the options from the list below.";
 
@@ -616,69 +627,57 @@ async function handlePostBranchAction(
 
   const typedBranch = branch as Branch;
 
+  let text: string;
   if (action === "review") {
-    await sendReviewLink(supabase, phoneNumber, typedBranch);
+    text = reviewLinkText(typedBranch);
   } else if (action === "map") {
-    await sendMapLink(supabase, phoneNumber, typedBranch);
+    text = mapLinkText(typedBranch);
   } else {
-    await sendCustomerServiceInfo(supabase, phoneNumber);
+    text = CUSTOMER_SERVICE_MESSAGE;
   }
 
   // Options 1-3 complete the post-branch flow; option 4 (handled above) skips
   // both the 'active' transition and the closing message since it restarts
-  // branch selection instead.
-  await supabase.from("customers").update({ state: "active" }).eq("phone_number", phoneNumber);
-  await sendPostActionClosing(supabase, phoneNumber);
+  // branch selection instead. The state update and the send are independent,
+  // so they run concurrently rather than back-to-back.
+  await Promise.all([
+    supabase.from("customers").update({ state: "active" }).eq("phone_number", phoneNumber),
+    sendAndLog(supabase, phoneNumber, text + "\n\n" + POST_ACTION_CLOSING_MESSAGE),
+  ]);
 }
 
-async function sendReviewLink(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
-  let text: string;
+function reviewLinkText(branch: Branch): string {
   if (branch.gmb_review_link) {
-    text =
+    return (
       `تفضل، هذا رابط تقييم فرع ${branch.name} على جوجل.\n\n` +
       `Here's the Google review link for our ${branch.name} branch:\n\n` +
-      branch.gmb_review_link;
-  } else {
-    console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_review_link set`);
-    text =
-      "عذراً، رابط التقييم غير متوفر حالياً.\nSorry, the review link isn't available yet.";
+      branch.gmb_review_link
+    );
   }
-
-  const waMessageId = await sendWhatsAppText(phoneNumber, text);
-  await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
+  console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_review_link set`);
+  return "عذراً، رابط التقييم غير متوفر حالياً.\nSorry, the review link isn't available yet.";
 }
 
-async function sendMapLink(supabase: SupabaseClient, phoneNumber: string, branch: Branch) {
-  let text: string;
+function mapLinkText(branch: Branch): string {
   if (branch.gmb_map_link) {
-    text =
+    return (
       `تفضل، هذا موقع فرع ${branch.name} على الخريطة.\n\n` +
       `Here's the map location for our ${branch.name} branch:\n\n` +
-      branch.gmb_map_link;
-  } else {
-    console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_map_link set`);
-    text =
-      "عذراً، رابط الموقع غير متوفر حالياً.\nSorry, the location link isn't available yet.";
+      branch.gmb_map_link
+    );
   }
+  console.warn(`Branch id=${branch.id} (${branch.name}) has no gmb_map_link set`);
+  return "عذراً، رابط الموقع غير متوفر حالياً.\nSorry, the location link isn't available yet.";
+}
 
+async function sendAndLog(supabase: SupabaseClient, phoneNumber: string, text: string) {
   const waMessageId = await sendWhatsAppText(phoneNumber, text);
   await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
-}
-
-async function sendCustomerServiceInfo(supabase: SupabaseClient, phoneNumber: string) {
-  const waMessageId = await sendWhatsAppText(phoneNumber, CUSTOMER_SERVICE_MESSAGE);
-  await logMessage(supabase, phoneNumber, "outbound", CUSTOMER_SERVICE_MESSAGE, waMessageId);
-}
-
-async function sendPostActionClosing(supabase: SupabaseClient, phoneNumber: string) {
-  const waMessageId = await sendWhatsAppText(phoneNumber, POST_ACTION_CLOSING_MESSAGE);
-  await logMessage(supabase, phoneNumber, "outbound", POST_ACTION_CLOSING_MESSAGE, waMessageId);
 }
 
 async function sendGenericError(supabase: SupabaseClient, phoneNumber: string) {
   const text = "عذراً، حدث خطأ. من فضلك حاول مرة أخرى لاحقاً.\nSorry, something went wrong. Please try again later.";
-  const waMessageId = await sendWhatsAppText(phoneNumber, text);
-  await logMessage(supabase, phoneNumber, "outbound", text, waMessageId);
+  await sendAndLog(supabase, phoneNumber, text);
 }
 
 // The DB stores this location's name as the abbreviation "RAK" (see
@@ -751,7 +750,10 @@ function buildActiveStateSystemPrompt(locationBranchSummary: string): string {
     "to have a narrow job — warm and natural, not a repeated scripted refusal.\n\n" +
     "Always reply in BOTH Arabic and English together, Arabic first then English — every reply " +
     "must show both languages, regardless of which language the customer wrote in. Keep " +
-    "responses short."
+    "responses short.\n\n" +
+    "Formatting: plain text only, WhatsApp-appropriate. No markdown headers, bullet lists, or " +
+    "horizontal rules. If emphasizing a word, WhatsApp renders single *asterisks* as bold, not " +
+    "double **asterisks**. Keep it to a couple of short sentences per language, not a list."
   );
 }
 
@@ -777,16 +779,12 @@ const ACTIVE_INTENT_CHANGE_BRANCH_HINT =
   "لتغيير الفرع، اكتب 'تغيير الفرع' أو 'القائمة الرئيسية'.\n" +
   "To change your branch, type 'change branch' or 'main menu'.";
 
-async function sendActiveIntentClosing(supabase: SupabaseClient, phoneNumber: string) {
-  const waMessageId = await sendWhatsAppText(phoneNumber, ACTIVE_INTENT_CHANGE_BRANCH_HINT);
-  await logMessage(supabase, phoneNumber, "outbound", ACTIVE_INTENT_CHANGE_BRANCH_HINT, waMessageId);
-}
-
 /**
  * Fulfills a plain-language review/map/customer-service request from an
- * 'active' customer — reusing the exact same send helpers as the
- * post-branch-action menu (options 1-3), just reached via keyword matching
- * instead of a list_reply tap.
+ * 'active' customer — reusing the same text builders as the post-branch-
+ * action menu (options 1-3), just reached via keyword matching instead of a
+ * list_reply tap. The reply and the change-branch hint are sent as one
+ * message rather than two.
  */
 async function handleActiveStateIntent(
   supabase: SupabaseClient,
@@ -795,8 +793,7 @@ async function handleActiveStateIntent(
   intent: ActiveIntent
 ) {
   if (intent === "service") {
-    await sendCustomerServiceInfo(supabase, phoneNumber);
-    await sendActiveIntentClosing(supabase, phoneNumber);
+    await sendAndLog(supabase, phoneNumber, CUSTOMER_SERVICE_MESSAGE + "\n\n" + ACTIVE_INTENT_CHANGE_BRANCH_HINT);
     return;
   }
 
@@ -819,14 +816,9 @@ async function handleActiveStateIntent(
   }
 
   const typedBranch = branch as Branch;
+  const text = intent === "review" ? reviewLinkText(typedBranch) : mapLinkText(typedBranch);
 
-  if (intent === "review") {
-    await sendReviewLink(supabase, phoneNumber, typedBranch);
-  } else {
-    await sendMapLink(supabase, phoneNumber, typedBranch);
-  }
-
-  await sendActiveIntentClosing(supabase, phoneNumber);
+  await sendAndLog(supabase, phoneNumber, text + "\n\n" + ACTIVE_INTENT_CHANGE_BRANCH_HINT);
 }
 
 async function handleActiveConversation(
@@ -845,13 +837,15 @@ async function handleActiveConversation(
 
   try {
     const locationBranchSummary = await buildLocationBranchSummary(supabase);
+
+    const claudeStart = Date.now();
     const response = await anthropic.messages.create({
-      model: "claude-sonnet-5",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 250,
-      thinking: { type: "disabled" },
       system: buildActiveStateSystemPrompt(locationBranchSummary),
       messages: [{ role: "user", content: inboundBody || "(no text)" }],
     });
+    console.log(`[claude] fallback reply to=${phoneNumber} ${Date.now() - claudeStart}ms`);
 
     const textBlock = response.content.find((block) => block.type === "text");
     if (textBlock && textBlock.type === "text") {
@@ -861,6 +855,5 @@ async function handleActiveConversation(
     console.error("Claude API error while replying to active-state customer", err);
   }
 
-  const waMessageId = await sendWhatsAppText(phoneNumber, replyText);
-  await logMessage(supabase, phoneNumber, "outbound", replyText, waMessageId);
+  await sendAndLog(supabase, phoneNumber, replyText);
 }

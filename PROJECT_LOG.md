@@ -38,6 +38,11 @@ hardcoded), so it can accurately answer "how many branches do you have" / "how m
 The branch-change trigger now recognizes free-form change requests ("I want to change the
 location") without misfiring on plain status queries ("what's my current location"), and
 re-selecting a branch via this flow sends a "location changed to X" confirmation first.
+Client-reported slow replies were investigated and then fixed: the webhook now ACKs Meta
+immediately (via `after()`) and processes in the background, the two-message sequences in the
+post-branch menu, the plain-language intent replies, and the branch-change confirmation are each
+now a single WhatsApp send, and the Claude fallback now uses `claude-haiku-4-5-20251001` instead of
+`claude-sonnet-5`. See the change history entry below for before/after numbers.
 
 ## Architecture
 - Next.js App Router + Vercel
@@ -47,6 +52,134 @@ re-selecting a branch via this flow sends a "location changed to X" confirmation
 - No human handoff, no image handling, no product catalog — this bot is lead capture + review collection + campaign sending only
 
 ## Change history
+
+### 2026-08-08 — Fix slow reply delivery (ack-immediately, merge sends, switch to Haiku)
+- What changed, based directly on the prior investigation entry's findings:
+  1. **Ack immediately, process in background:** `POST` in app/api/whatsapp/route.ts now parses the
+     payload, schedules all processing (both the `messages` and `statuses` loops) inside
+     `after()` (from `next/server` — already available in this Next.js version, no new dependency),
+     and returns `NextResponse.json({status:"ok"})` immediately without awaiting any of it. `after()`
+     is Vercel's backing for this — the serverless function is kept alive until the callback
+     finishes, so background work isn't killed after the response returns. This doesn't make any
+     individual step faster; it removes Meta-side webhook latency/retry risk from the customer-
+     facing delay.
+  2. **Reduced WhatsApp send count on 3 code paths that sent 2 sequential messages each:**
+     - `handleActiveStateIntent` (the plain-language "customer service"/"review"/"map" replies for
+       already-active customers): the answer and the change-branch hint are now one message.
+     - `handlePostBranchAction` (the post-branch-menu review/map/service replies): same merge, and
+       the now-independent DB state update (`state: "active"`) and the single send run via
+       `Promise.all` instead of sequentially.
+     - `confirmBranch` / `sendPostBranchActionList` (branch-change confirmation before the post-
+       branch action list): the "location changed to X" line is now folded into the action list
+       message's own body text instead of being sent as a separate text message first — a genuine
+       zero-extra-API-call merge since list messages already carry an arbitrary body.
+     All three were logically the same message type on both sides (plain text + plain text, or text
+     folded into a list body), so no case needed `Promise.all`-with-order-preserved as a fallback —
+     every code path now sends at most one WhatsApp message per logical step. `sendReviewLink`/
+     `sendMapLink` were refactored into pure text-builders (`reviewLinkText`/`mapLinkText`) reused by
+     both the button-menu and plain-language paths; a `sendAndLog` helper replaced the repeated
+     send+log pairing at the new merged call sites. `sendBranchChangedConfirmation`,
+     `sendActiveIntentClosing`, `sendCustomerServiceInfo`, and `sendPostActionClosing` were removed
+     as dead code once their call sites were merged into single sends.
+  3. **Switched the Claude fallback model from `claude-sonnet-5` to `claude-haiku-4-5-20251001`:**
+     tested both against the same 6 example messages (identity questions, branch-count questions,
+     an off-topic question, a greeting) using the real production prompt-building logic against the
+     live Supabase data. First pass: Haiku averaged 2204ms vs. Sonnet's 3633ms (~39% faster), but
+     Haiku's "how many branches do you have?" reply was **truncated at `max_tokens: 250`** (cut off
+     mid-Arabic-sentence, entire English half missing — a hard violation of the bilingual
+     requirement) and multiple replies used markdown (`**bold**`, bullet-dashes, `**Header:**`
+     labels, `---` rules) that WhatsApp's renderer doesn't support. Added an explicit
+     WhatsApp-plain-text-only formatting instruction to `buildActiveStateSystemPrompt` (no markdown
+     headers/bullets/rules, single-`*asterisk*` for emphasis, keep it to a couple of short sentences
+     per language) and re-ran both models: with that fix, all 6 Haiku replies were complete, fully
+     bilingual, and free of unsupported markdown — average 1767ms vs. Sonnet's 3482ms (**1715ms /
+     49% faster**), so the model was switched. (The formatting instruction was applied for both
+     models, since it's a real fix regardless of which model is used — Sonnet's replies were already
+     markdown-free before this, so it only changes Haiku's behavior in practice.)
+  4. **Removed the TEMP investigation logging** added in the prior entry (per-step timestamps, total
+     handler duration try/finally) rather than keeping it — the causes it was added to diagnose are
+     now fixed, and keeping per-step granularity permanently would be log noise for a webhook that
+     runs on every inbound message. Kept one lightweight permanent line per outbound WhatsApp API
+     call (`[whatsapp] send to=... type=... {ms}ms status=...`, in the single choke point
+     lib/whatsapp.ts) and one per Claude fallback call (`[claude] fallback reply to=... {ms}ms`) —
+     enough to spot a regression later without per-step spam.
+- Re-measured both scenarios from the prior investigation, against a freshly restarted dev server
+  (killed a stale leftover node process holding port 3000 first, same lesson as the prior entry),
+  using the same safe methodology (seeded temp `active`-state customer with a real branch_id, fake
+  phone number, real webhook POST, real Claude/WhatsApp APIs, cleaned up after):
+  - **Claude fallback path** ("do you have size L in stock?"): **7574ms → ~2660-2940ms** total
+    (measured 2944ms and 2658ms across two runs) — dominated by the Haiku call (~1460-1760ms,
+    matching the standalone benchmark) plus one WhatsApp send (~620-940ms). The webhook's own ACK to
+    Meta is now **11-36ms** (confirmed from Next's own request-timing log, `POST /api/whatsapp 200
+    in ~11-36ms`), with the `[claude]`/`[whatsapp]` background-work log lines appearing strictly
+    *after* that response line in the server log — direct proof `after()` is deferring the work
+    rather than the ack still waiting on it.
+  - **Keyword-matched intent path** ("customer service"): **2253ms → ~1060-1360ms** total — now one
+    WhatsApp send (~700-940ms) instead of two sequential ones (previously 1683ms combined for just
+    the sends).
+  - Both numbers are the real end-to-end time from webhook POST to the reply being sent and logged
+    (measured by polling the `messages` table for the new outbound row, rather than a log line,
+    since the total-duration TEMP log was removed) — not the (now near-instant) ACK time, which is a
+    separate, additional improvement on top.
+- Why: Client reported perceived delay in WhatsApp replies (see the prior investigation entry); this
+  pass implements the fix based on that investigation's measured bottleneck (Claude latency, the
+  WhatsApp Send API being paid twice on 2-message paths, and the ACK being held behind all of it)
+  and confirms the improvement with real re-measurement rather than assuming it from the
+  theoretical changes alone.
+- Files touched: app/api/whatsapp/route.ts, lib/whatsapp.ts, PROJECT_LOG.md
+
+### 2026-08-08 — Investigate slow reply delivery (instrumentation only, no fix yet)
+- What changed: Added `[timing]` console.log instrumentation (marked "TEMP INVESTIGATION
+  LOGGING") at every major step: POST handler entry and pre-ACK, message-received, dedup check,
+  upsertCustomer, logMessage(inbound), state-routing decision, buildLocationBranchSummary, Claude
+  call start/end, and total handleInboundMessage duration (via a try/finally so every exit path
+  is covered) in app/api/whatsapp/route.ts; and WhatsApp Send API call start/end in the single
+  choke point lib/whatsapp.ts's sendWhatsAppMessage() (covers every outbound send — text, list,
+  template — across the whole app, not just the webhook). No behavior changed, only logging added.
+- Findings:
+  1. **Ack timing (confirmed by reading the code, and empirically by the log order):** `POST`
+     always `await`s `handleInboundMessage()` to completion — including every DB write, the Claude
+     call, and the WhatsApp send — before returning `NextResponse.json({status:"ok"})`. The 200 to
+     Meta is sent strictly *after* all processing, never before.
+  2. **Parallelizable queries:** `buildLocationBranchSummary()` already runs its two queries via
+     `Promise.all` (from earlier work). The one real candidate left is the dedup check (`messages`
+     select) and `upsertCustomer()` (`customers` select/insert) at the top of
+     `handleInboundMessage()` — independent tables, no data dependency between them — but they're
+     sequential on purpose: the dedup check can short-circuit before doing any customer-upsert
+     work on a duplicate/retried webhook delivery. Flagging this as a real but minor optimization
+     with a tradeoff, not a clear-cut win.
+  3. **Claude calls:** exactly one call site in the whole codebase (`handleActiveConversation()`),
+     `max_tokens: 250`, `thinking: { type: "disabled" }`. Nothing elsewhere in the app calls
+     Claude, so this is already consistent everywhere.
+  4. **Real measured timing** (two live test requests against the actual dev server and real
+     Supabase/Claude/WhatsApp APIs — seeded a temp customer, fired a real webhook POST, cleaned up
+     after): a message that reaches the Claude fallback ("how many branches do you have?") took
+     **7574ms** total handler time — dedup+upsert+logMessage combined only 361ms (4.8%),
+     buildLocationBranchSummary 111ms (1.5%), the Claude call itself **4527ms (59.8%)**, and the
+     single WhatsApp Send API call **2334ms (30.8%)**. A message that matches a keyword intent and
+     skips Claude entirely ("send me the location") took **2253ms** total — DB steps again ~343ms,
+     but two sequential WhatsApp Send API calls (intent fulfillment + closing hint) took 1067ms
+     and 616ms respectively, **1683ms combined (75%) of that total**. Database work was the
+     smallest, most consistent cost in both runs; **Claude and the WhatsApp Send API round trips
+     are the actual bottleneck**, and flows that send multiple messages pay the WhatsApp API
+     latency multiple times over since each send is awaited before the next starts.
+  - How the real test was run safely: seeded a temporary customer row via the service-role client
+    (state='active', a real branch_id), POSTed a realistic Meta webhook payload structure directly
+    to the local dev server, and used an obviously-fake phone number for the "to" field — the
+    WhatsApp Send API still accepts and times such a request normally (returns 200 with a message
+    id; delivery failure, if any, only surfaces later via an async status webhook), so this
+    measures real production-representative API latency without risking a message reaching a real
+    person. Cleaned up the temp customer/messages row afterward.
+  - Note: hit a leftover dev server process from an earlier task's verification work still
+    listening on port 3000 (from a session that wasn't fully torn down) on the first attempt,
+    which silently absorbed the first test's traffic on stale code. Killed it and confirmed a
+    single clean instance before re-running — the reported numbers above are from the verified
+    clean run.
+- Why: Client reported perceived delay in WhatsApp replies; per explicit instruction, this pass is
+  investigation-only (add logging, measure, report) — no fix has been applied yet pending a
+  decision on which bottleneck to address (Claude latency, WhatsApp API latency, sending the ACK
+  to Meta earlier, and/or parallelizing independent sends).
+- Files touched: app/api/whatsapp/route.ts, lib/whatsapp.ts, PROJECT_LOG.md
 
 ### 2026-08-05 — Fix branch-change trigger over/under-matching + re-selection confirmation
 - What changed:
